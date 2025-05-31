@@ -40,4 +40,4 @@ python3 kandji_to_snipeit_sync.py
 - Adjust the category and status IDs in the script as needed for your environment.
 
 ## License
-MIT 
+MIT # apple-device-sync
