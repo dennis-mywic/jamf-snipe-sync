@@ -41,4 +41,12 @@ __pycache__/
 .Python
 env/
 venv/
-ENV/ 
+ENV/
+
+# Sensitive files
+*.log
+snipe_api_key.txt
+ddl_members.json
+*_sync.log
+credentials.json
+token.json 
