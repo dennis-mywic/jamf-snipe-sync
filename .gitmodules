@@ -1,0 +1,9 @@
+[submodule "loanerform"]
+    path = loanerform
+    url = https://github.com/dennis-mywic/loanerform.git
+[submodule "intune-snipe-it-sync"]
+    path = intune-snipe-it-sync
+    url = https://github.com/dennis-mywic/intune-snipe-it-sync.git
+[submodule "apple-device-sync"]
+    path = apple-device-sync
+    url = https://github.com/dennis-mywic/apple-device-sync.git 
