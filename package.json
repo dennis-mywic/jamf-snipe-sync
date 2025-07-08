@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "lottie-react": "^2.4.1",
+    "nodemailer": "^7.0.3"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^6.4.17"
+  }
+}
