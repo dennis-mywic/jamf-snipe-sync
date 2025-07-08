@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Jamf to Snipe-IT sync daily at 1 AM MT
+
+[Timer]
+# 1 AM Mountain Time = 7 AM UTC
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target 
