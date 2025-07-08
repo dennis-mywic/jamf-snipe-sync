@@ -1,46 +1,85 @@
-# Apple Device Sync (Kandji to Snipe-IT)
+# Jamf Pro to Snipe-IT Device Sync
 
-This project automates syncing Mac device data from Kandji to Snipe-IT, ensuring your asset inventory is always up to date.
+This script synchronizes Mac devices between Jamf Pro and Snipe-IT asset management systems. It runs daily at 1 AM Mountain Time to ensure both systems stay in sync.
 
-## Main Features
-- **Fetches Devices from Kandji:** Uses the Kandji API and a specified blueprint to get all managed Mac devices.
-- **Maps Device Fields:** Maps Kandji device fields to Snipe-IT asset fields, using the serial number as the asset tag.
-- **Model & Category Handling:** Looks up or creates the correct model in Snipe-IT and assigns assets to the "Student Loaner Laptop" category (ID 12).
-- **Status Management:** Sets asset status to "Deployable" (ID 2).
-- **API Rate Limiting:** Handles Snipe-IT API rate limiting gracefully.
-- **Cross-Platform:** Works on macOS, Linux, or Windows (requires Python 3).
+## Features
 
-## Key Files
-- `kandji_to_snipeit_sync.py`: Main sync script.
-- `.env`: Stores API tokens and configuration (not committed to git).
+- Syncs Mac devices from Jamf Pro to Snipe-IT
+- Creates/updates device records in Snipe-IT
+- Matches and assigns devices to users based on email
+- Handles case-insensitive email matching
+- Includes retry logic for rate limits
+- Runs automatically via systemd timer
 
-## Environment Variables
-Create a `.env` file in the project root with:
+## Prerequisites
+
+- Python 3.x
+- Access to Jamf Pro API
+- Access to Snipe-IT API
+- Ubuntu server (for systemd service)
+
+## Installation
+
+1. Clone this repository:
+```bash
+git clone https://github.com/dennis-mywic/apple-device-sync.git
+cd apple-device-sync
 ```
-KANDJI_API_TOKEN=your_kandji_api_token
-KANDJI_BASE_URL=https://yourtenant.api.kandji.io
-KANDJI_BLUEPRINT_ID=your_blueprint_id
-SNIPE_IT_URL=https://your-snipeit-instance
-SNIPE_IT_API_TOKEN=your_snipeit_api_token
+
+2. Install dependencies:
+```bash
+pip3 install requests python-dotenv
+```
+
+3. Create a `.env` file with your credentials:
+```bash
+JAMF_URL=https://your-jamf-instance.com
+JAMF_CLIENT_ID=your-client-id
+JAMF_CLIENT_SECRET=your-client-secret
+SNIPE_IT_URL=https://your-snipeit-instance.com
+SNIPE_IT_API_TOKEN=your-api-token
+```
+
+4. Install the systemd service and timer:
+```bash
+sudo cp systemd/jamf-snipe-sync.* /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/jamf-snipe-sync.*
+sudo systemctl daemon-reload
+sudo systemctl enable jamf-snipe-sync.timer
+sudo systemctl start jamf-snipe-sync.timer
 ```
 
 ## Usage
-1. Install dependencies:
-   ```
-   pip install requests python-dotenv
-   ```
-2. Run the sync script:
-   ```
-   python3 kandji_to_snipeit_sync.py
-   ```
 
-## Notes
-- Ensure the Snipe-IT category (ID 12) and models exist before running the script.
-- The script will skip devices if the model is not found in Snipe-IT.
-- Adjust category and status IDs in the script as needed for your environment.
+The script will run automatically every day at 1 AM Mountain Time. To run it manually:
 
-## OS Compatibility
-- This project is **not OS dependent**. It runs anywhere Python 3 is available.
+```bash
+python3 jamf-to-snipe.py
+```
+
+## Logging
+
+Logs are written to standard output and can be viewed using:
+```bash
+journalctl -u jamf-snipe-sync.service
+```
+
+## Configuration
+
+The script uses the following environment variables:
+- `JAMF_URL`: Your Jamf Pro instance URL
+- `JAMF_CLIENT_ID`: OAuth client ID for Jamf Pro
+- `JAMF_CLIENT_SECRET`: OAuth client secret for Jamf Pro
+- `SNIPE_IT_URL`: Your Snipe-IT instance URL
+- `SNIPE_IT_API_TOKEN`: API token for Snipe-IT
+
+## Troubleshooting
+
+Common issues:
+1. Rate limiting: The script includes retry logic with exponential backoff
+2. User not found: Check email addresses match between systems
+3. Authentication: Verify your API credentials are correct
 
 ## License
-MIT # apple-device-sync
+
+MIT License
