@@ -267,13 +267,13 @@ def process_device(device, snipe_headers):
             'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         }
         
-        # Only set status_id for new assets
-        if not resp.status_code == 200 or not resp.json().get('rows'):
-            asset_data['status_id'] = 2  # Deployable
-        
         # Check if asset exists
         url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
         resp = snipe_session.get(url, headers=snipe_headers)
+        
+        # Only set status_id for new assets
+        if resp.status_code != 200 or not resp.json().get('rows'):
+            asset_data['status_id'] = 2  # Deployable
         
         asset_id = None
         if resp.status_code == 200 and resp.json().get('rows'):
