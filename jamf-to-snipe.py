@@ -175,25 +175,35 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
     time.sleep(3)
     
     try:
-        # Use exact email match instead of search
-        url = f"{SNIPE_IT_URL}/api/v1/users?email={urllib.parse.quote(email_lower)}&limit=1"
-        logger.debug(f"Looking up user with email: {email_lower}")
+        # Try variations of the email
+        email_variations = [email_lower]
         
-        resp = snipe_session.get(url, headers=snipe_headers)
-        
-        # Check response before trying to parse JSON
-        if resp.status_code == 200:
-            try:
-                users = resp.json().get('rows', [])
-                if users:
-                    user = users[0]
-                    user_id = user.get('id')
-                    if user_id:
-                        user_cache[email_lower] = user_id
-                        logger.debug(f"Found user {email_lower} with ID: {user_id}")
-                        return user_id
-            except ValueError as e:
-                logger.warning(f"Invalid JSON response for user {email_lower}: {str(e)}")
+        # Handle special cases for known name variations
+        if 'mackenzie' in email_lower:
+            email_variations.append(email_lower.replace('mackenzie', 'mckenzie'))
+        elif 'mckenzie' in email_lower:
+            email_variations.append(email_lower.replace('mckenzie', 'mackenzie'))
+            
+        # Try each email variation
+        for email_var in email_variations:
+            url = f"{SNIPE_IT_URL}/api/v1/users?email={urllib.parse.quote(email_var)}&limit=1"
+            logger.debug(f"Looking up user with email: {email_var}")
+            
+            resp = snipe_session.get(url, headers=snipe_headers)
+            
+            # Check response before trying to parse JSON
+            if resp.status_code == 200:
+                try:
+                    users = resp.json().get('rows', [])
+                    if users:
+                        user = users[0]
+                        user_id = user.get('id')
+                        if user_id:
+                            user_cache[email_lower] = user_id
+                            logger.debug(f"Found user {email_var} with ID: {user_id}")
+                            return user_id
+                except ValueError as e:
+                    logger.warning(f"Invalid JSON response for user {email_var}: {str(e)}")
         
         # Special handling for Kirsten Anderson
         if 'anderson' in email_lower:
