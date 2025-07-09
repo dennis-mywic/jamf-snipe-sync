@@ -359,6 +359,7 @@ def fetch_jamf_devices(smart_group_id=None):
         
         # Fetch detailed information concurrently
         all_devices = []
+        jamf_serials = set()  # Track Jamf serials
         with ThreadPoolExecutor(max_workers=5) as executor:
             future_to_id = {
                 executor.submit(fetch_device_details, device_id, headers, base_url): device_id
@@ -371,8 +372,40 @@ def fetch_jamf_devices(smart_group_id=None):
                     device_data = future.result()
                     if device_data:
                         all_devices.append(device_data)
+                        if device_data.get('serial_number'):
+                            jamf_serials.add(device_data.get('serial_number'))
                 except Exception as e:
                     logger.error(f"Error fetching device {device_id}: {str(e)}")
+        
+        # Now get all Snipe-IT devices in Staff Mac Laptop category
+        snipe_headers = {
+            'Authorization': f'Bearer {SNIPE_IT_API_TOKEN}',
+            'Accept': 'application/json'
+        }
+        
+        snipe_url = f"{SNIPE_IT_URL}/api/v1/hardware?category_id=16&limit=100"
+        snipe_resp = snipe_session.get(snipe_url, headers=snipe_headers)
+        snipe_resp.raise_for_status()
+        snipe_data = snipe_resp.json()
+        
+        snipe_serials = set()
+        for asset in snipe_data.get('rows', []):
+            if asset.get('serial'):
+                snipe_serials.add(asset.get('serial'))
+        
+        # Compare and log differences
+        logger.info(f"Found {len(jamf_serials)} devices in Jamf")
+        logger.info(f"Found {len(snipe_serials)} devices in Snipe-IT category 16 (Staff Mac Laptop)")
+        
+        # Find devices in Snipe but not in Jamf
+        extra_in_snipe = snipe_serials - jamf_serials
+        if extra_in_snipe:
+            logger.warning(f"The following serials exist in Snipe-IT but not in Jamf: {extra_in_snipe}")
+            
+        # Find devices in Jamf but not in Snipe
+        missing_in_snipe = jamf_serials - snipe_serials
+        if missing_in_snipe:
+            logger.warning(f"The following serials exist in Jamf but not in Snipe-IT: {missing_in_snipe}")
         
         return all_devices
         
