@@ -9,10 +9,12 @@ from requests.packages.urllib3.util.retry import Retry
 from functools import lru_cache
 import logging
 from datetime import datetime
+import sys
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed from INFO to DEBUG
+    level=logging.INFO,  # Changed from DEBUG to INFO for cleaner logs
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
@@ -21,83 +23,137 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env
-from dotenv import load_dotenv
+# Load environment variables
 load_dotenv()
 
-# Constants and Configuration
+# Jamf Pro settings
 JAMF_URL = os.getenv('JAMF_URL', '').rstrip('/')
-if not JAMF_URL.startswith('https://'):
-    JAMF_URL = f"https://{JAMF_URL}"
+if not JAMF_URL.startswith('http'):
+    JAMF_URL = f'https://{JAMF_URL}'
 
-CLIENT_ID = os.getenv('JAMF_CLIENT_ID')
-CLIENT_SECRET = os.getenv('JAMF_CLIENT_SECRET')
-SNIPE_IT_URL = os.getenv('SNIPE_IT_URL')
-SNIPE_IT_API_TOKEN = os.getenv('SNIPE_IT_API_TOKEN')
-JAMF_SMART_GROUP_ID = os.getenv('JAMF_SMART_GROUP_ID')
+# Support both OAuth client credentials and basic auth
+JAMF_CLIENT_ID = os.getenv('JAMF_CLIENT_ID')
+JAMF_CLIENT_SECRET = os.getenv('JAMF_CLIENT_SECRET')
+JAMF_USERNAME = os.getenv('JAMF_USERNAME')
+JAMF_PASSWORD = os.getenv('JAMF_PASSWORD')
 
-# Define categories
+# Snipe-IT settings
+SNIPE_IT_URL = os.getenv('SNIPE_IT_URL', '').rstrip('/')
+if not SNIPE_IT_URL.startswith('http'):
+    # Use environment variable or default to HTTPS
+    SNIPE_IT_URL = os.getenv('SNIPE_IT_URL_FALLBACK', 'https://172.22.2.74')
+
+SNIPE_IT_API_TOKEN = os.getenv('SNIPE_IT_API_TOKEN', '')
+
+# Verify required environment variables
+if not all([JAMF_URL, SNIPE_IT_URL, SNIPE_IT_API_TOKEN]):
+    logger.error('Missing required environment variables. Please check your .env file.')
+    sys.exit(1)
+
+if not (JAMF_CLIENT_ID and JAMF_CLIENT_SECRET) and not (JAMF_USERNAME and JAMF_PASSWORD):
+    logger.error("Missing Jamf credentials - need either client credentials or username/password")
+    sys.exit(1)
+
+# Define categories and smart groups
 CATEGORIES = {
     'staff': {'id': 16, 'name': 'Staff Mac Laptop'},
-    'student': {'id': 12, 'name': 'Student Loaner Laptop'}
+    'student': {'id': 12, 'name': 'Student Loaner Laptop'},
+    'ssc': {'id': 13, 'name': 'SSC Laptop'},
+    'checkin_ipad': {'id': 20, 'name': 'Check-In iPad'},
+    'donations_ipad': {'id': 19, 'name': 'Donations iPad'},
+    'moneris_ipad': {'id': 21, 'name': 'Moneris iPad'},
+    'teacher_ipad': {'id': 15, 'name': 'Teacher iPad'},
+    'appletv': {'id': 11, 'name': 'Apple TVs'}
 }
 
-# Create session with retry logic and connection pooling
+# Smart group IDs
+SMART_GROUPS = {
+    'computers': {
+        'all_staff_mac': {'id': 22, 'name': "All Staff Mac"},
+        'student_loaners': {'id': 3, 'name': "Student Loaners"},
+        'ssc_laptops': {'id': 25, 'name': "SSC Laptops", 'category': 'ssc'}
+    },
+    'mobile_devices': {
+        'apple_tvs': {'id': 1, 'name': "Apple TVs", 'category': 'appletv'},
+        'checkin_ipad': {'id': 11, 'name': "Check-In iPad", 'category': 'checkin_ipad'},
+        'donations_ipad': {'id': 10, 'name': "Donations iPad", 'category': 'donations_ipad'},
+        'moneris_ipad': {'id': 9, 'name': "Moneris iPad", 'category': 'moneris_ipad'},
+        'teacher_ipad': {'id': 2, 'name': "Teacher iPad", 'category': 'teacher_ipad'}
+    }
+}
+
+# Create session with improved retry logic and connection pooling
 def create_session():
-    """Create a session with optimized retry settings"""
+    """Create a requests session with improved retry logic and connection pooling"""
     session = requests.Session()
-    retry_strategy = Retry(
-        total=3,  # Reduced from 5 to 3 - if it fails after 3 retries, it's likely a real issue
-        backoff_factor=2,  # More reasonable backoff - will retry after 2, 4, 8 seconds
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
-        respect_retry_after_header=True  # Honor server's retry-after header if present
+    retries = Retry(
+        total=5,  # Increased from 3
+        backoff_factor=0.5,  # Increased from 0.3
+        status_forcelist=[500, 502, 503, 504, 429],  # Added 429 (rate limit)
+        allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]  # Allow POST retries
     )
     adapter = HTTPAdapter(
-        max_retries=retry_strategy,
-        pool_connections=10,  # Increased to handle concurrent requests
-        pool_maxsize=10,  # Increased to match pool_connections
-        pool_block=True  # Block when pool is full instead of discarding
+        max_retries=retries,
+        pool_connections=10,  # Increased connection pool
+        pool_maxsize=20,      # Increased max connections
+        pool_block=False      # Don't block when pool is full
     )
-    session.mount("https://", adapter)
-    session.headers.update({'User-Agent': 'JamfToSnipeSync/1.0'})  # Add user agent
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
     return session
 
-# Create separate sessions for each API to avoid connection pool conflicts
 jamf_session = create_session()
 snipe_session = create_session()
 
-@lru_cache(maxsize=1)
-def get_jamf_token():
-    """Get an access token from Jamf Pro API using client credentials with caching"""
-    token_url = f"{JAMF_URL}/api/oauth/token"
-    data = {
-        'grant_type': 'client_credentials',
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET
-    }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    
-    try:
-        logger.debug(f"Requesting token from {token_url}")
-        form_data = urllib.parse.urlencode(data)
-        response = jamf_session.post(token_url, headers=headers, data=form_data)
-        logger.debug(f"Token request status code: {response.status_code}")
-        response.raise_for_status()
-        return response.json().get('access_token')
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error getting Jamf token: {str(e)}")
-        if hasattr(e.response, 'text'):
-            logger.error(f"Response: {e.response.text}")
-        return None
-
 def get_jamf_headers():
-    """Get headers for Jamf Pro API using OAuth token"""
-    token = get_jamf_token()
-    return {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json"
-    } if token else None
+    """Get headers for Jamf Pro API requests"""
+    try:
+        # Try OAuth client credentials first
+        if JAMF_CLIENT_ID and JAMF_CLIENT_SECRET:
+            url = f"{JAMF_URL}/api/oauth/token"
+            logger.debug(f"Requesting token from {url}")
+            
+            data = {
+                'grant_type': 'client_credentials',
+                'client_id': JAMF_CLIENT_ID,
+                'client_secret': JAMF_CLIENT_SECRET
+            }
+            
+            headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            resp = jamf_session.post(url, data=data, headers=headers, timeout=30)
+            logger.debug(f"Token request status code: {resp.status_code}")
+            
+            if resp.status_code == 200:
+                token = resp.json().get('access_token')
+                return {
+                    'Authorization': f'Bearer {token}',
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                }
+            else:
+                logger.error(f"Failed to get token: {resp.status_code}")
+                if hasattr(resp, 'text'):
+                    logger.error(f"Response: {resp.text}")
+        
+        # Fall back to basic auth if OAuth fails or not configured
+        if JAMF_USERNAME and JAMF_PASSWORD:
+            import base64
+            auth_string = base64.b64encode(f"{JAMF_USERNAME}:{JAMF_PASSWORD}".encode()).decode()
+            return {
+                'Authorization': f'Basic {auth_string}',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+            
+        return None
+            
+    except Exception as e:
+        logger.error(f"Error getting headers: {str(e)}")
+        return None
 
 # Cache for user lookups
 user_cache = {}
@@ -120,7 +176,7 @@ def _get_or_create_model(model_name: str, category_id: int, headers_tuple: tuple
     # Search for existing model
     url = f"{SNIPE_IT_URL}/api/v1/models?search={model_name}"
     try:
-        resp = snipe_session.get(url, headers=snipe_headers)
+        resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
         resp.raise_for_status()
         
         if resp.status_code == 200:
@@ -141,7 +197,8 @@ def _get_or_create_model(model_name: str, category_id: int, headers_tuple: tuple
         resp = snipe_session.post(
             f"{SNIPE_IT_URL}/api/v1/models",
             headers=snipe_headers,
-            json=model_data
+            json=model_data,
+            timeout=30
         )
         resp.raise_for_status()
         
@@ -171,8 +228,8 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
     if email_lower in user_cache:
         return user_cache[email_lower]
     
-    # Add delay before API call to prevent rate limiting
-    time.sleep(3)
+    # Reduced delay before API call to prevent rate limiting
+    time.sleep(1)  # Reduced from 3 seconds
     
     try:
         # Try variations of the email
@@ -189,7 +246,7 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
             url = f"{SNIPE_IT_URL}/api/v1/users?email={urllib.parse.quote(email_var)}&limit=1"
             logger.debug(f"Looking up user with email: {email_var}")
             
-            resp = snipe_session.get(url, headers=snipe_headers)
+            resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
             
             # Check response before trying to parse JSON
             if resp.status_code == 200:
@@ -207,11 +264,11 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
         
         # Special handling for Kirsten Anderson
         if 'anderson' in email_lower:
-            time.sleep(3)
+            time.sleep(1)  # Reduced delay
             alt_email = 'kirsten.anderson@mywic.org'
             url = f"{SNIPE_IT_URL}/api/v1/users?email={urllib.parse.quote(alt_email)}&limit=1"
             
-            resp = snipe_session.get(url, headers=snipe_headers)
+            resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
             if resp.status_code == 200:
                 try:
                     users = resp.json().get('rows', [])
@@ -234,52 +291,228 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
         # Don't cache on request errors so we can retry next time
         return None
 
-def process_device(device, snipe_headers):
+def fetch_mobile_device_details(device_id, headers, base_url):
+    """Fetch detailed information for a single mobile device"""
+    try:
+        # First try the classic API
+        url = f"{base_url}/mobiledevices/id/{device_id}"
+        logger.debug(f"Fetching mobile device details from: {url}")
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        
+        if resp.status_code == 401:
+            # If classic API fails, try the modern API
+            # Get a fresh token for the modern API
+            new_headers = get_jamf_headers()
+            modern_url = f"{JAMF_URL}/api/v2/mobile-devices/{device_id}"
+            resp = jamf_session.get(modern_url, headers=new_headers, timeout=30)
+            resp.raise_for_status()
+            device_data = resp.json()
+        else:
+            resp.raise_for_status()
+            device_data = resp.json().get('mobile_device', {})
+            
+        if not device_data:
+            logger.warning(f"No data found for mobile device {device_id}")
+            return None
+            
+        # Extract relevant fields
+        if 'general' in device_data:
+            # Classic API response
+            general = device_data.get('general', {})
+            location = device_data.get('location', {})
+            return {
+                'serial_number': general.get('serial_number'),
+                'model': general.get('model'),
+                'asset_tag': general.get('asset_tag'),
+                'device_name': general.get('name'),
+                'username': location.get('username', ''),
+                'email': location.get('email_address', ''),
+                'real_name': location.get('real_name', ''),
+                'device_type': 'mobile'
+            }
+        else:
+            # Modern API response
+            return {
+                'serial_number': device_data.get('serialNumber'),
+                'model': device_data.get('model'),
+                'asset_tag': device_data.get('assetTag'),
+                'device_name': device_data.get('name'),
+                'username': device_data.get('username', ''),
+                'email': device_data.get('emailAddress', ''),
+                'real_name': device_data.get('realName', ''),
+                'device_type': 'mobile'
+            }
+            
+    except Exception as e:
+        logger.error(f"Error fetching mobile device details for {device_id}: {str(e)}")
+        return None
+
+def fetch_computer_details(device_id, headers, base_url):
+    """Fetch detailed information for a single computer"""
+    try:
+        url = f"{base_url}/computers/id/{device_id}"
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        
+        device_data = resp.json().get('computer', {})
+        location = device_data.get('location', {})
+        
+        return {
+            'serial_number': device_data.get('general', {}).get('serial_number'),
+            'model': device_data.get('hardware', {}).get('model'),
+            'asset_tag': device_data.get('general', {}).get('asset_tag'),
+            'device_name': device_data.get('general', {}).get('name'),
+            'username': location.get('username', ''),
+            'email': location.get('email_address', ''),
+            'real_name': location.get('real_name', ''),
+            'device_type': 'computer'
+        }
+    except Exception as e:
+        logger.error(f"Error fetching computer details for {device_id}: {str(e)}")
+        return None
+
+def fetch_devices_from_group(group_id, device_type='computers'):
+    """Fetch devices from a specific Jamf Pro smart group"""
+    headers = get_jamf_headers()
+    if not headers:
+        logger.error("Failed to get Jamf headers")
+        return []
+        
+    base_url = f"{JAMF_URL}/JSSResource"
+    endpoint = 'computergroups' if device_type == 'computers' else 'mobiledevicegroups'
+    
+    try:
+        # First try the classic API
+        url = f"{base_url}/{endpoint}/id/{group_id}"
+        logger.debug(f"Fetching devices from group: {url}")
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        
+        if resp.status_code == 401 and device_type != 'computers':
+            # If classic API fails for mobile devices, try the modern API
+            # Get a fresh token for the modern API
+            new_headers = get_jamf_headers()
+            modern_url = f"{JAMF_URL}/api/v2/mobile-device-groups/{group_id}/devices"
+            resp = jamf_session.get(modern_url, headers=new_headers, timeout=30)
+            resp.raise_for_status()
+            devices = resp.json().get('results', [])
+            device_ids = [dev.get('id') for dev in devices]
+        else:
+            # Classic API worked
+            resp.raise_for_status()
+            if device_type == 'computers':
+                devices = resp.json().get('computer_group', {}).get('computers', [])
+            else:
+                devices = resp.json().get('mobile_device_group', {}).get('mobile_devices', [])
+                
+            device_ids = [dev.get('id') for dev in devices]
+            
+        logger.info(f"Found {len(device_ids)} devices in group {group_id}")
+        
+        # Fetch detailed information concurrently with improved concurrency
+        all_devices = []
+        with ThreadPoolExecutor(max_workers=8) as executor:  # Increased from 5
+            if device_type == 'computers':
+                future_to_id = {
+                    executor.submit(fetch_computer_details, device_id, headers, base_url): device_id
+                    for device_id in device_ids
+                }
+            else:
+                future_to_id = {
+                    executor.submit(fetch_mobile_device_details, device_id, headers, base_url): device_id
+                    for device_id in device_ids
+                }
+            
+            for future in as_completed(future_to_id):
+                device_id = future_to_id[future]
+                try:
+                    device_data = future.result()
+                    if device_data:
+                        all_devices.append(device_data)
+                        logger.info(f"Successfully fetched details for device {device_id}")
+                    else:
+                        logger.warning(f"No data returned for device {device_id}")
+                except Exception as e:
+                    logger.error(f"Error fetching device {device_id}: {str(e)}")
+        
+        logger.info(f"Successfully fetched details for {len(all_devices)} devices from group {group_id}")
+        return all_devices
+        
+    except Exception as e:
+        logger.error(f"Error fetching devices from group {group_id}: {str(e)}")
+        return []
+
+def list_smart_groups(device_type='computers'):
+    """List all smart groups in Jamf Pro"""
+    headers = get_jamf_headers()
+    if not headers:
+        logger.error("Failed to get Jamf headers")
+        return []
+        
+    base_url = f"{JAMF_URL}/JSSResource"
+    endpoint = 'computergroups' if device_type == 'computers' else 'mobiledevicegroups'
+    
+    try:
+        url = f"{base_url}/{endpoint}"
+        logger.debug(f"Fetching all groups from: {url}")
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        
+        if device_type == 'computers':
+            groups = resp.json().get('computer_groups', [])
+        else:
+            groups = resp.json().get('mobile_device_groups', [])
+            
+        logger.info(f"Found {len(groups)} {device_type} groups:")
+        for group in groups:
+            logger.info(f"  - {group.get('name')} (ID: {group.get('id')})")
+            
+    except Exception as e:
+        logger.error(f"Error fetching {device_type} groups: {str(e)}")
+
+def process_device(device, snipe_headers, device_category):
     """Process a single device for syncing"""
     try:
         serial = device.get('serial_number')
         logger.info(f"Processing device {serial}")
         
-        # Add delay at the start of each device processing
-        time.sleep(3)  # 3 second delay between devices
+        # Reduced delay at the start of each device processing
+        time.sleep(2)  # Reduced from 14 seconds to 2 seconds
         
         # Convert headers to tuple for caching
         headers_tuple = tuple(sorted(snipe_headers.items()))
         
-        # Determine category based on email domain
-        email = device.get('email', '').lower()
-        category = CATEGORIES['staff'] if '@mywic.org' in email else CATEGORIES['student']
-        
         # Get model ID
-        model_id = _get_or_create_model(device.get('model'), category['id'], headers_tuple)
+        model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
         if not model_id:
             logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
             return False
             
-        # Get user ID - but don't fail if we can't get it
+        # Get user ID if available
         user_id = None
-        try:
-            user_id = _get_user(email, headers_tuple)
-            if user_id:
-                logger.info(f"Successfully found user ID {user_id} for email {email}")
-            else:
-                logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
-        except Exception as e:
-            logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
+        email = device.get('email')
+        if email:
+            try:
+                user_id = _get_user(email, headers_tuple)
+                if user_id:
+                    logger.info(f"Successfully found user ID {user_id} for email {email}")
+                else:
+                    logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
+            except Exception as e:
+                logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
         
         # Prepare asset data
         asset_data = {
             'asset_tag': serial,
             'serial': serial,
             'model_id': model_id,
-            'category_id': category['id'],
+            'category_id': device_category['id'],
             'name': device.get('device_name'),
             'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         }
         
         # Check if asset exists
         url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
-        resp = snipe_session.get(url, headers=snipe_headers)
+        resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
         
         # Only set status_id for new assets
         if resp.status_code != 200 or not resp.json().get('rows'):
@@ -293,7 +526,8 @@ def process_device(device, snipe_headers):
             resp = snipe_session.put(
                 f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
                 headers=snipe_headers,
-                json=asset_data
+                json=asset_data,
+                timeout=30
             )
         else:
             # Create new asset
@@ -301,7 +535,8 @@ def process_device(device, snipe_headers):
             resp = snipe_session.post(
                 f"{SNIPE_IT_URL}/api/v1/hardware",
                 headers=snipe_headers,
-                json=asset_data
+                json=asset_data,
+                timeout=30
             )
             if resp.status_code == 200:
                 asset_id = resp.json().get('payload', {}).get('id')
@@ -317,15 +552,16 @@ def process_device(device, snipe_headers):
                 'note': f"Automatically checked out via Jamf sync on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             }
             
-            # Add delay before checkout
-            time.sleep(3)
+            # Reduced delay before checkout
+            time.sleep(1)  # Reduced from 3 seconds
             
             checkout_url = f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}/checkout"
             try:
                 checkout_resp = snipe_session.post(
                     checkout_url,
                     headers=snipe_headers,
-                    json=checkout_data
+                    json=checkout_data,
+                    timeout=30
                 )
                 if checkout_resp.status_code == 200:
                     logger.info(f"Successfully checked out device {serial} to user ID {user_id}")
@@ -343,114 +579,12 @@ def process_device(device, snipe_headers):
         logger.error(f"Error processing device {device.get('serial_number')}: {str(e)}")
         return False
 
-def fetch_jamf_devices(smart_group_id=None):
-    """Fetch devices from Jamf Pro API with concurrent processing"""
-    headers = get_jamf_headers()
-    if not headers:
-        logger.error("Failed to get Jamf headers")
-        return []
-        
-    base_url = f"{JAMF_URL}/JSSResource"
-    
-    try:
-        # Get device IDs
-        if smart_group_id:
-            url = f"{base_url}/computergroups/id/{smart_group_id}"
-            logger.debug(f"Fetching devices from smart group: {url}")
-        else:
-            url = f"{base_url}/computers"
-            logger.debug(f"Fetching all devices: {url}")
-            
-        resp = jamf_session.get(url, headers=headers)
-        logger.debug(f"Device list request status code: {resp.status_code}")
-        resp.raise_for_status()
-        
-        device_ids = [comp.get('id') for comp in resp.json().get('computers', [])]
-        
-        # Fetch detailed information concurrently
-        all_devices = []
-        jamf_serials = set()  # Track Jamf serials
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_id = {
-                executor.submit(fetch_device_details, device_id, headers, base_url): device_id
-                for device_id in device_ids
-            }
-            
-            for future in as_completed(future_to_id):
-                device_id = future_to_id[future]
-                try:
-                    device_data = future.result()
-                    if device_data:
-                        all_devices.append(device_data)
-                        if device_data.get('serial_number'):
-                            jamf_serials.add(device_data.get('serial_number'))
-                except Exception as e:
-                    logger.error(f"Error fetching device {device_id}: {str(e)}")
-        
-        # Now get all Snipe-IT devices in Staff Mac Laptop category
-        snipe_headers = {
-            'Authorization': f'Bearer {SNIPE_IT_API_TOKEN}',
-            'Accept': 'application/json'
-        }
-        
-        snipe_url = f"{SNIPE_IT_URL}/api/v1/hardware?category_id=16&limit=100"
-        snipe_resp = snipe_session.get(snipe_url, headers=snipe_headers)
-        snipe_resp.raise_for_status()
-        snipe_data = snipe_resp.json()
-        
-        snipe_serials = set()
-        for asset in snipe_data.get('rows', []):
-            if asset.get('serial'):
-                snipe_serials.add(asset.get('serial'))
-        
-        # Compare and log differences
-        logger.info(f"Found {len(jamf_serials)} devices in Jamf")
-        logger.info(f"Found {len(snipe_serials)} devices in Snipe-IT category 16 (Staff Mac Laptop)")
-        
-        # Find devices in Snipe but not in Jamf
-        extra_in_snipe = snipe_serials - jamf_serials
-        if extra_in_snipe:
-            logger.warning(f"The following serials exist in Snipe-IT but not in Jamf: {extra_in_snipe}")
-            
-        # Find devices in Jamf but not in Snipe
-        missing_in_snipe = jamf_serials - snipe_serials
-        if missing_in_snipe:
-            logger.warning(f"The following serials exist in Jamf but not in Snipe-IT: {missing_in_snipe}")
-        
-        return all_devices
-        
-    except Exception as e:
-        logger.error(f"Error fetching devices: {str(e)}")
-        return []
-
-def fetch_device_details(device_id, headers, base_url):
-    """Fetch detailed information for a single device"""
-    try:
-        url = f"{base_url}/computers/id/{device_id}"
-        resp = jamf_session.get(url, headers=headers)
-        resp.raise_for_status()
-        
-        device_data = resp.json().get('computer', {})
-        location = device_data.get('location', {})
-        
-        return {
-            'serial_number': device_data.get('general', {}).get('serial_number'),
-            'model': device_data.get('hardware', {}).get('model'),
-            'asset_tag': device_data.get('general', {}).get('asset_tag'),
-            'device_name': device_data.get('general', {}).get('name'),
-            'username': location.get('username', ''),
-            'email': location.get('email_address', ''),
-            'real_name': location.get('real_name', '')
-        }
-    except Exception as e:
-        logger.error(f"Error fetching device details for {device_id}: {str(e)}")
-        return None
-
 def main():
     """Main execution function"""
-    if not all([JAMF_URL, SNIPE_IT_URL, SNIPE_IT_API_TOKEN]):
-        logger.error("Missing required environment variables")
-        return
+    # List all smart groups first
+    logger.info("Listing all smart groups in Jamf Pro...")
+    list_smart_groups('computers')
+    list_smart_groups('mobile_devices')
     
     # Set up Snipe-IT headers
     snipe_headers = {
@@ -459,23 +593,43 @@ def main():
         'Content-Type': 'application/json'
     }
     
-    # Fetch all devices
-    logger.info("Fetching devices from Jamf Pro...")
-    devices = fetch_jamf_devices(JAMF_SMART_GROUP_ID)
-    logger.info(f"Found {len(devices)} devices")
+    all_devices = []
     
-    # Process devices with limited concurrency
-    success_count = 0
-    with ThreadPoolExecutor(max_workers=1) as executor:  # Keep at 1 worker
-        # Create futures for each device
-        futures = []
+    # Fetch computers from staff, student, and SSC groups
+    logger.info("Fetching computers from Jamf Pro...")
+    for group_name, group_info in SMART_GROUPS['computers'].items():
+        devices = fetch_devices_from_group(group_info['id'], 'computers')
+        if group_name == 'student_loaners':
+            for device in devices:
+                device['category'] = CATEGORIES['student']
+        elif group_name == 'ssc_laptops':
+            for device in devices:
+                device['category'] = CATEGORIES['ssc']
+        else:
+            for device in devices:
+                device['category'] = CATEGORIES['staff']
+        all_devices.extend(devices)
+    
+    # Fetch mobile devices
+    logger.info("Fetching mobile devices from Jamf Pro...")
+    for group_name, group_info in SMART_GROUPS['mobile_devices'].items():
+        devices = fetch_devices_from_group(group_info['id'], 'mobile_devices')
         for device in devices:
-            # Add delay between submissions
-            time.sleep(5)  # Increased from 3 to 5 seconds delay
-            future = executor.submit(process_device, device, snipe_headers)
+            device['category'] = CATEGORIES[group_info['category']]
+        all_devices.extend(devices)
+        logger.info(f"Added {len(devices)} devices from {group_info['name']}")
+    
+    logger.info(f"Found total of {len(all_devices)} devices")
+    
+    # Process all devices with improved concurrency
+    success_count = 0
+    with ThreadPoolExecutor(max_workers=3) as executor:  # Increased from 1 to 3
+        futures = []
+        for device in all_devices:
+            time.sleep(1)  # Reduced from 5 seconds to 1 second
+            future = executor.submit(process_device, device, snipe_headers, device['category'])
             futures.append((future, device.get('serial_number')))
         
-        # Process completed futures
         for future, serial in futures:
             try:
                 if future.result():
@@ -486,7 +640,7 @@ def main():
             except Exception as e:
                 logger.error(f"Error processing device {serial}: {str(e)}")
     
-    logger.info(f"Sync completed. Successfully processed {success_count} out of {len(devices)} devices")
+    logger.info(f"Sync completed. Successfully processed {success_count} out of {len(all_devices)} devices")
 
 if __name__ == '__main__':
     main() 
