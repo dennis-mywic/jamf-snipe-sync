@@ -160,102 +160,7 @@ def get_jamf_headers():
 user_cache = {}
 prestage_cache = {}
 
-def get_prestage_enrollments():
-    """Fetch all prestage enrollments from Jamf Pro"""
-    headers = get_jamf_headers()
-    if not headers:
-        logger.error("Failed to get Jamf headers for prestage lookup")
-        return {}
-    
-    try:
-        # Get computer prestages
-        url = f"{JAMF_URL}/api/v1/computer-prestages"
-        resp = jamf_session.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        
-        prestages = {}
-        prestage_data = resp.json().get('results', [])
-        
-        for prestage in prestage_data:
-            prestage_id = prestage.get('id')
-            prestage_name = prestage.get('displayName', '').lower()
-            prestages[prestage_id] = {
-                'id': prestage_id,
-                'name': prestage_name,
-                'category': determine_category_from_prestage_name(prestage_name)
-            }
-        
-        logger.info(f"Found {len(prestages)} computer prestage enrollments")
-        for pid, pdata in prestages.items():
-            logger.info(f"  - Prestage ID {pid}: '{pdata['name']}' → Category: {pdata['category']['name']}")
-        
-        return prestages
-        
-    except Exception as e:
-        logger.error(f"Error fetching prestage enrollments: {str(e)}")
-        return {}
-
-def determine_category_from_prestage_name(prestage_name):
-    """Determine Snipe-IT category based on prestage enrollment name"""
-    prestage_lower = prestage_name.lower()
-    
-    if 'student' in prestage_lower or 'loaner' in prestage_lower:
-        return CATEGORIES['student']
-    elif 'ssc' in prestage_lower:
-        return CATEGORIES['ssc']
-    elif 'staff' in prestage_lower or 'teacher' in prestage_lower or 'employee' in prestage_lower:
-        return CATEGORIES['staff']
-    else:
-        # Default to staff if unclear
-        logger.warning(f"Unknown prestage name '{prestage_name}', defaulting to staff category")
-        return CATEGORIES['staff']
-
-def get_device_prestage(device_id):
-    """Get the prestage enrollment for a specific device"""
-    if device_id in prestage_cache:
-        return prestage_cache[device_id]
-    
-    headers = get_jamf_headers()
-    if not headers:
-        logger.error("Failed to get Jamf headers for device prestage lookup")
-        return None
-    
-    try:
-        # Get device details to find prestage assignment
-        url = f"{JAMF_URL}/api/v1/computers-inventory-detail/id/{device_id}"
-        resp = jamf_session.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        
-        device_data = resp.json()
-        prestage_id = device_data.get('general', {}).get('enrollmentMethodPrestage', {}).get('id')
-        
-        if prestage_id:
-            # Get prestage details
-            prestage_url = f"{JAMF_URL}/api/v1/computer-prestages/{prestage_id}"
-            prestage_resp = jamf_session.get(prestage_url, headers=headers, timeout=30)
-            prestage_resp.raise_for_status()
-            
-            prestage_info = prestage_resp.json()
-            prestage_name = prestage_info.get('displayName', '')
-            
-            result = {
-                'id': prestage_id,
-                'name': prestage_name,
-                'category': determine_category_from_prestage_name(prestage_name)
-            }
-            
-            prestage_cache[device_id] = result
-            logger.debug(f"Device {device_id} has prestage '{prestage_name}' → Category: {result['category']['name']}")
-            return result
-        else:
-            logger.warning(f"Device {device_id} has no prestage enrollment")
-            prestage_cache[device_id] = None
-            return None
-            
-    except Exception as e:
-        logger.error(f"Error getting prestage for device {device_id}: {str(e)}")
-        prestage_cache[device_id] = None
-        return None
+# Prestage functions removed - now getting prestage info directly from device details
 
 @lru_cache(maxsize=100)
 def get_or_create_model(model_name: str, category_id: int, snipe_headers: dict) -> int:
@@ -449,27 +354,95 @@ def fetch_mobile_device_details(device_id, headers, base_url):
 def fetch_computer_details(device_id, headers, base_url):
     """Fetch detailed information for a single computer"""
     try:
+        # Fetch from Classic API with extended data including prestage
         url = f"{base_url}/computers/id/{device_id}"
         resp = jamf_session.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         
         device_data = resp.json().get('computer', {})
+        general = device_data.get('general', {})
         location = device_data.get('location', {})
         
+        # Try to get prestage enrollment info from multiple possible fields
+        prestage_name = ''
+        prestage_sources = [
+            general.get('mdm_capability_capable_users', {}).get('mdm_capability_capable_user', {}).get('enrollment_method'),
+            general.get('enrollment_method'),
+            general.get('prestage_enrollment'),
+            general.get('prestage'),
+        ]
+        
+        # Also check extension attributes for prestage info
+        extension_attributes = device_data.get('extension_attributes', [])
+        for attr in extension_attributes:
+            attr_name = attr.get('name', '').lower()
+            if 'prestage' in attr_name or 'enrollment' in attr_name:
+                prestage_name = attr.get('value', '')
+                break
+        
+        # If no prestage found in extension attributes, check the sources
+        if not prestage_name:
+            for source in prestage_sources:
+                if source and str(source).strip():
+                    prestage_name = str(source).strip()
+                    break
+        
+        # Determine category based on available information
+        category = determine_category_from_device_info(general, location, prestage_name)
+        
         return {
-            'device_id': device_id,  # Include device ID for prestage lookup
-            'serial_number': device_data.get('general', {}).get('serial_number'),
+            'device_id': device_id,
+            'serial_number': general.get('serial_number'),
             'model': device_data.get('hardware', {}).get('model'),
-            'asset_tag': device_data.get('general', {}).get('asset_tag'),
-            'device_name': device_data.get('general', {}).get('name'),
+            'asset_tag': general.get('asset_tag'),
+            'device_name': general.get('name'),
             'username': location.get('username', ''),
             'email': location.get('email_address', ''),
             'real_name': location.get('real_name', ''),
-            'device_type': 'computer'
+            'device_type': 'computer',
+            'prestage_name': prestage_name,
+            'category': category
         }
     except Exception as e:
         logger.error(f"Error fetching computer details for {device_id}: {str(e)}")
         return None
+
+def determine_category_from_device_info(general, location, prestage_name):
+    """Determine Snipe-IT category based on available device information"""
+    # Check prestage name first
+    if prestage_name:
+        prestage_lower = prestage_name.lower()
+        if 'student' in prestage_lower or 'loaner' in prestage_lower:
+            logger.info(f"Category determined by prestage '{prestage_name}' → Student")
+            return CATEGORIES['student']
+        elif 'ssc' in prestage_lower:
+            logger.info(f"Category determined by prestage '{prestage_name}' → SSC")
+            return CATEGORIES['ssc']
+        elif 'staff' in prestage_lower or 'teacher' in prestage_lower or 'employee' in prestage_lower:
+            logger.info(f"Category determined by prestage '{prestage_name}' → Staff")
+            return CATEGORIES['staff']
+    
+    # Check user email patterns
+    email = location.get('email_address', '').lower()
+    if email:
+        # Student email patterns (customize based on your school's pattern)
+        if any(pattern in email for pattern in ['student', '@students.', 'pupil']):
+            logger.info(f"Category determined by email pattern '{email}' → Student")
+            return CATEGORIES['student']
+    
+    # Check device name patterns
+    device_name = general.get('name', '').lower()
+    if device_name:
+        if any(pattern in device_name for pattern in ['student', 'loaner', 'loan']):
+            logger.info(f"Category determined by device name '{device_name}' → Student")
+            return CATEGORIES['student']
+        elif 'ssc' in device_name:
+            logger.info(f"Category determined by device name '{device_name}' → SSC")
+            return CATEGORIES['ssc']
+    
+    # Default to staff
+    logger.info(f"Category defaulted to Staff (no clear indicators found)")
+    return CATEGORIES['staff']
 
 def fetch_devices_from_group(group_id, device_type='computers'):
     """Fetch devices from a specific Jamf Pro smart group"""
@@ -686,10 +659,6 @@ def main():
     list_smart_groups('computers')
     list_smart_groups('mobile_devices')
     
-    # Fetch prestage enrollments for accurate categorization
-    logger.info("Fetching prestage enrollments from Jamf Pro...")
-    prestages = get_prestage_enrollments()
-    
     # Set up Snipe-IT headers
     snipe_headers = {
         'Authorization': f'Bearer {SNIPE_IT_API_TOKEN}',
@@ -699,32 +668,19 @@ def main():
     
     all_devices = []
     
-    # Fetch computers from smart groups (but use prestage for categorization)
-    logger.info("Fetching computers from Jamf Pro...")
+    # Fetch computers from smart groups (category determined in fetch_computer_details)
+    logger.info("Fetching computers from Jamf Pro with prestage/enrollment information...")
     for group_name, group_info in SMART_GROUPS['computers'].items():
         devices = fetch_devices_from_group(group_info['id'], 'computers')
         
-        # For each computer, determine category based on prestage enrollment
+        # Device categorization is now handled in fetch_computer_details()
+        # Each device already has its category determined from prestage/enrollment data
         for device in devices:
-            device_id = device.get('device_id')
-            if device_id:
-                prestage_info = get_device_prestage(device_id)
-                if prestage_info:
-                    device['category'] = prestage_info['category']
-                    device['prestage_name'] = prestage_info['name']
-                    logger.info(f"Device {device.get('serial_number')} has prestage '{prestage_info['name']}' → Category: {prestage_info['category']['name']}")
-                else:
-                    # Fallback to smart group-based logic if no prestage found
-                    logger.warning(f"No prestage found for device {device.get('serial_number')}, using smart group fallback")
-                    if group_name == 'student_loaners':
-                        device['category'] = CATEGORIES['student']
-                    elif group_name == 'ssc_laptops':
-                        device['category'] = CATEGORIES['ssc']
-                    else:
-                        device['category'] = CATEGORIES['staff']
+            if device.get('category'):
+                logger.info(f"Device {device.get('serial_number')} → Category: {device['category']['name']}")
             else:
-                # Fallback for devices without device_id
-                logger.warning(f"No device ID for {device.get('serial_number')}, using smart group categorization")
+                # Fallback to smart group logic if no category was determined
+                logger.warning(f"No category determined for {device.get('serial_number')}, using smart group fallback")
                 if group_name == 'student_loaners':
                     device['category'] = CATEGORIES['student']
                 elif group_name == 'ssc_laptops':
