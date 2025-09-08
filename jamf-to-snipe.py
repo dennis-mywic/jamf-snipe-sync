@@ -388,7 +388,7 @@ def fetch_computer_details(device_id, headers, base_url):
                     break
         
         # Determine category based on available information
-        category = determine_category_from_device_info(general, location, prestage_name)
+        category, category_reason = determine_category_from_device_info(general, location, prestage_name)
         
         return {
             'device_id': device_id,
@@ -401,7 +401,8 @@ def fetch_computer_details(device_id, headers, base_url):
             'real_name': location.get('real_name', ''),
             'device_type': 'computer',
             'prestage_name': prestage_name,
-            'category': category
+            'category': category,
+            'category_reason': category_reason
         }
     except Exception as e:
         logger.error(f"Error fetching computer details for {device_id}: {str(e)}")
@@ -414,13 +415,13 @@ def determine_category_from_device_info(general, location, prestage_name):
         prestage_lower = prestage_name.lower()
         if 'student' in prestage_lower or 'loaner' in prestage_lower:
             logger.info(f"Category determined by prestage '{prestage_name}' → Student")
-            return CATEGORIES['student']
+            return CATEGORIES['student'], 'prestage'
         elif 'ssc' in prestage_lower:
             logger.info(f"Category determined by prestage '{prestage_name}' → SSC")
-            return CATEGORIES['ssc']
+            return CATEGORIES['ssc'], 'prestage'
         elif 'staff' in prestage_lower or 'teacher' in prestage_lower or 'employee' in prestage_lower:
             logger.info(f"Category determined by prestage '{prestage_name}' → Staff")
-            return CATEGORIES['staff']
+            return CATEGORIES['staff'], 'prestage'
     
     # Check user email patterns
     email = location.get('email_address', '').lower()
@@ -428,21 +429,21 @@ def determine_category_from_device_info(general, location, prestage_name):
         # Student email patterns (customize based on your school's pattern)
         if any(pattern in email for pattern in ['student', '@students.', 'pupil']):
             logger.info(f"Category determined by email pattern '{email}' → Student")
-            return CATEGORIES['student']
+            return CATEGORIES['student'], 'email'
     
     # Check device name patterns
     device_name = general.get('name', '').lower()
     if device_name:
         if any(pattern in device_name for pattern in ['student', 'loaner', 'loan']):
             logger.info(f"Category determined by device name '{device_name}' → Student")
-            return CATEGORIES['student']
+            return CATEGORIES['student'], 'device_name'
         elif 'ssc' in device_name:
             logger.info(f"Category determined by device name '{device_name}' → SSC")
-            return CATEGORIES['ssc']
+            return CATEGORIES['ssc'], 'device_name'
     
-    # Default to staff
+    # Default to staff (no clear indicators)
     logger.info(f"Category defaulted to Staff (no clear indicators found)")
-    return CATEGORIES['staff']
+    return CATEGORIES['staff'], None
 
 def fetch_devices_from_group(group_id, device_type='computers'):
     """Fetch devices from a specific Jamf Pro smart group"""
@@ -668,25 +669,22 @@ def main():
     
     all_devices = []
     
-    # Fetch computers from smart groups (category determined in fetch_computer_details)
-    logger.info("Fetching computers from Jamf Pro with prestage/enrollment information...")
+    # Fetch computers from smart groups - simple and accurate categorization
+    logger.info("Fetching computers from Jamf Pro...")
     for group_name, group_info in SMART_GROUPS['computers'].items():
         devices = fetch_devices_from_group(group_info['id'], 'computers')
         
-        # Device categorization is now handled in fetch_computer_details()
-        # Each device already has its category determined from prestage/enrollment data
+        # Simple rule: smart group determines category, period.
         for device in devices:
-            if device.get('category'):
-                logger.info(f"Device {device.get('serial_number')} → Category: {device['category']['name']}")
+            if group_name == 'student_loaners':
+                device['category'] = CATEGORIES['student']
+                logger.info(f"Device {device.get('serial_number')} (Student Loaners group) → Category: Student Loaner Laptop")
+            elif group_name == 'ssc_laptops':
+                device['category'] = CATEGORIES['ssc']
+                logger.info(f"Device {device.get('serial_number')} (SSC Laptops group) → Category: SSC Laptop")
             else:
-                # Fallback to smart group logic if no category was determined
-                logger.warning(f"No category determined for {device.get('serial_number')}, using smart group fallback")
-                if group_name == 'student_loaners':
-                    device['category'] = CATEGORIES['student']
-                elif group_name == 'ssc_laptops':
-                    device['category'] = CATEGORIES['ssc']
-                else:
-                    device['category'] = CATEGORIES['staff']
+                device['category'] = CATEGORIES['staff']
+                logger.info(f"Device {device.get('serial_number')} ({group_info['name']} group) → Category: Staff Mac Laptop")
         
         all_devices.extend(devices)
     
