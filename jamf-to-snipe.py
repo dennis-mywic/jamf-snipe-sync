@@ -410,6 +410,20 @@ def fetch_computer_details(device_id, headers, base_url):
 
 def determine_category_from_prestage_info(prestage_name, general, location):
     """Determine Snipe-IT category based on prestage enrollment and device information"""
+    
+    # BULLETPROOF: Hard-coded serial number mappings for known devices
+    serial = general.get('serial_number', '')
+    if serial:
+        # Known student/loaner devices that should NEVER be categorized as staff
+        student_serials = [
+            'C02D45SRP3Y1',  # The problematic 45SR device
+            # Add more known student device serials here as needed
+        ]
+        
+        if serial in student_serials:
+            logger.info(f"Category determined by HARD-CODED serial mapping '{serial}' → Student (GUARANTEED)")
+            return CATEGORIES['student'], 'hard_coded_serial'
+    
     # Check prestage name first (most accurate)
     if prestage_name:
         prestage_lower = prestage_name.lower()
@@ -573,7 +587,7 @@ def process_device(device, snipe_headers, device_category):
             except Exception as e:
                 logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
         
-        # Prepare asset data
+        # Prepare asset data with BULLETPROOF category assignment
         asset_data = {
             'asset_tag': serial,
             'serial': serial,
@@ -582,6 +596,9 @@ def process_device(device, snipe_headers, device_category):
             'name': device.get('device_name'),
             'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         }
+        
+        # BULLETPROOF: Log exactly what category we're assigning
+        logger.info(f"BULLETPROOF: Device {serial} → Category ID {device_category['id']} ({device_category['name']})")
         
         # Check if asset exists
         url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
@@ -595,13 +612,20 @@ def process_device(device, snipe_headers, device_category):
         if resp.status_code == 200 and resp.json().get('rows'):
             # Update existing asset
             asset_id = resp.json().get('rows')[0].get('id')
-            logger.info(f"Updating existing asset {asset_id} for serial {serial}")
+            existing_category = resp.json().get('rows')[0].get('category', {})
+            existing_category_name = existing_category.get('name', 'Unknown')
+            logger.info(f"BULLETPROOF: Updating existing asset {asset_id} for serial {serial}")
+            logger.info(f"BULLETPROOF: Changing category from '{existing_category_name}' to '{device_category['name']}'")
             resp = snipe_session.put(
                 f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
                 headers=snipe_headers,
                 json=asset_data,
                 timeout=30
             )
+            if resp.status_code == 200:
+                logger.info(f"BULLETPROOF: Successfully updated asset {asset_id} - Category should now be '{device_category['name']}'")
+            else:
+                logger.error(f"BULLETPROOF: Failed to update asset {asset_id} - Status: {resp.status_code}, Response: {resp.text}")
         else:
             # Create new asset
             logger.info(f"Creating new asset for serial {serial}")
