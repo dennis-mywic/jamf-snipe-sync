@@ -1,156 +1,308 @@
-# WIC Loaner Device Request System
+# Jamf Pro to Snipe-IT Device Sync System
 
-> **Note:** This app is managed by PM2, which provides process monitoring, automatic restarts, and basic failover. The system is already redundant and tolerates most failures automatically.
-The troubleshooting section below is provided just in case manual intervention is needed.
+> **Automated synchronization system that keeps Jamf Pro and Snipe-IT device inventories in perfect sync**
 
 ## Overview
 
-This system allows students at West Island College (WIC) to request loaner laptops or chargers. It automates ticket creation in Freshdesk, sends confirmation emails, and provides a modern, branded user experience. The system is built with **Next.js**, **React**, **Tailwind CSS**, and runs on a Linux VM with PM2.
+This Python-based system automatically synchronizes device information between Jamf Pro (macOS device management) and Snipe-IT (asset management system). It ensures that all Apple devices managed in Jamf Pro are accurately reflected in your Snipe-IT inventory with up-to-date information including serial numbers, device names, models, and status.
 
-## 🆕 New Features - Dynamic User Management
+## 🔄 What It Does
 
-### Microsoft 365 Integration
-The system now automatically fetches the latest user data from Microsoft 365:
+- **Bi-directional Sync**: Pulls device data from Jamf Pro and updates/creates corresponding assets in Snipe-IT
+- **Real-time Updates**: Keeps device information current including names, serial numbers, and status
+- **Automated Execution**: Runs on a schedule via systemd timers for hands-off operation
+- **Error Handling**: Robust logging and error recovery for reliable operation
+- **Apple Device Focus**: Specifically designed for macOS devices (MacBooks, iMacs, etc.)
 
-- **Real-time Staff Data** - Automatically syncs staff information including departments, job titles, and office locations
-- **Dynamic Student Lists** - Fetches 698+ student users from designated Microsoft 365 groups
-- **Live User Updates** - No more manual user list maintenance - data is always current
-- **Automatic Synchronization** - Runs every 6 hours to ensure user data is up-to-date
+## 🏗️ System Architecture
 
-### API Endpoints
-- **`/api/staff-emails`** - Staff email lookups for form dropdowns
-- **`/api/staff-users`** - Comprehensive staff information from Microsoft 365
-- **`/api/students`** - Student user data (698+ users from Microsoft 365 groups)
-- **`/api/teachers`** - Teacher user management
-- **`/api/devices`** - Available loaner devices from Snipe-IT
+```
+┌─────────────┐    API Calls    ┌──────────────┐    API Calls    ┌─────────────┐
+│   Jamf Pro  │ ◄──────────────► │  Sync Script │ ◄──────────────► │  Snipe-IT   │
+│             │   (Read Data)    │   (Python)   │  (Create/Update) │             │
+└─────────────┘                 └──────────────┘                  └─────────────┘
+                                        │
+                                        ▼
+                                ┌──────────────┐
+                                │   Logging    │
+                                │   & Monitoring│
+                                └──────────────┘
+```
 
-### Benefits
-- ✅ **Always Current** - User lists automatically update from Microsoft 365
-- ✅ **No Manual Work** - System handles user synchronization automatically
-- ✅ **Comprehensive Data** - Includes full staff profiles with departments and titles
-- ✅ **Real-time Access** - Form dropdowns show current user information
+## 📁 Repository Structure
 
-### Microsoft 365 Integration
-The system now automatically fetches the latest user data from Microsoft 365:
+```
+jamf-snipe-sync/
+├── jamf-to-snipe.py           # Main synchronization script
+├── requirements.txt           # Python dependencies
+├── .env.backup               # Environment variable template
+├── ecosystem.config.js       # PM2 configuration
+├── package.json             # Node.js dependencies (if any)
+├── systemd/                 # Systemd service files
+│   ├── jamf-snipe-sync.service
+│   └── jamf-snipe-sync.timer
+└── apple-device-sync/       # Additional sync modules (submodule)
+```
 
-- **Real-time Staff Data** - Automatically syncs staff information including departments, job titles, and office locations
-- **Dynamic Student Lists** - Fetches 698+ student users from designated Microsoft 365 groups
-- **Live User Updates** - No more manual user list maintenance - data is always current
-- **Automatic Synchronization** - Runs every 6 hours to ensure user data is up-to-date
+## 🛠️ Installation & Setup
 
-### API Endpoints
-- **`/api/staff-emails`** - Staff email lookups for form dropdowns
-- **`/api/staff-users`** - Comprehensive staff information from Microsoft 365
-- **`/api/students`** - Student user data (698+ users from Microsoft 365 groups)
-- **`/api/teachers`** - Teacher user management
-- **`/api/devices`** - Available loaner devices from Snipe-IT
+### Prerequisites
 
-### Benefits
-- ✅ **Always Current** - User lists automatically update from Microsoft 365
-- ✅ **No Manual Work** - System handles user synchronization automatically
-- ✅ **Comprehensive Data** - Includes full staff profiles with departments and titles
-- ✅ **Real-time Access** - Form dropdowns show current user information
+- Python 3.8+
+- Access to Jamf Pro API
+- Access to Snipe-IT API
+- Linux server (for automated execution)
+
+### 1. Clone Repository
+
+```bash
+git clone https://github.com/dennis-mywic/jamf-snipe-sync.git
+cd jamf-snipe-sync
+```
+
+### 2. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment Variables
+
+Create a `.env` file with your API credentials:
+
+```bash
+# Jamf Pro Configuration
+JAMF_URL=https://your-jamf-instance.jamfcloud.com
+JAMF_CLIENT_ID=your_jamf_client_id
+JAMF_CLIENT_SECRET=your_jamf_client_secret
+
+# Snipe-IT Configuration
+SNIPE_IT_URL=https://your-snipe-it-instance.com
+SNIPE_IT_API_TOKEN=your_snipe_it_api_token
+
+# Optional: Logging Configuration
+LOG_LEVEL=INFO
+LOG_FILE=/var/log/jamf-snipe-sync.log
+```
+
+### 4. Test Configuration
+
+```bash
+python jamf-to-snipe.py --test
+```
+
+## 🚀 Running the Script
+
+### Manual Execution
+
+#### Basic Sync (All Devices)
+```bash
+python jamf-to-snipe.py
+```
+
+#### Sync with Verbose Logging
+```bash
+python jamf-to-snipe.py --verbose
+```
+
+#### Dry Run (Test Without Changes)
+```bash
+python jamf-to-snipe.py --dry-run
+```
+
+#### Sync Specific Device Types
+```bash
+# Sync only MacBooks
+python jamf-to-snipe.py --device-type macbook
+
+# Sync only iMacs
+python jamf-to-snipe.py --device-type imac
+```
+
+#### Force Full Resync
+```bash
+python jamf-to-snipe.py --force-resync
+```
+
+#### Manual Execution with Custom Config
+```bash
+# Use custom environment file
+python jamf-to-snipe.py --env-file /path/to/custom/.env
+
+# Specify log output
+python jamf-to-snipe.py --log-file /custom/path/sync.log
+```
+
+### Automated Execution
+
+#### Using Systemd (Recommended)
+
+1. **Install systemd files:**
+```bash
+sudo cp systemd/jamf-snipe-sync.service /etc/systemd/system/
+sudo cp systemd/jamf-snipe-sync.timer /etc/systemd/system/
+```
+
+2. **Enable and start the timer:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable jamf-snipe-sync.timer
+sudo systemctl start jamf-snipe-sync.timer
+```
+
+3. **Check status:**
+```bash
+sudo systemctl status jamf-snipe-sync.timer
+sudo systemctl status jamf-snipe-sync.service
+```
+
+#### Using PM2 (Alternative)
+
+```bash
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+## 📊 Monitoring & Logs
+
+### View Real-time Logs
+```bash
+# Systemd logs
+sudo journalctl -u jamf-snipe-sync.service -f
+
+# PM2 logs
+pm2 logs jamf-snipe-sync
+
+# Direct log file
+tail -f /var/log/jamf-snipe-sync.log
+```
+
+### Check Sync Status
+```bash
+# Last sync run
+python jamf-to-snipe.py --status
+
+# Sync statistics
+python jamf-to-snipe.py --stats
+```
+
+## 🔧 Configuration Options
+
+### Script Arguments
+
+| Argument | Description | Example |
+|----------|-------------|---------|
+| `--dry-run` | Test sync without making changes | `--dry-run` |
+| `--verbose` | Enable detailed logging | `--verbose` |
+| `--force-resync` | Force full resynchronization | `--force-resync` |
+| `--device-type` | Sync specific device types only | `--device-type macbook` |
+| `--env-file` | Use custom environment file | `--env-file /path/.env` |
+| `--log-file` | Custom log file location | `--log-file /custom/sync.log` |
+| `--test` | Test API connections only | `--test` |
+| `--status` | Show last sync status | `--status` |
+| `--stats` | Display sync statistics | `--stats` |
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JAMF_URL` | Yes | Jamf Pro instance URL |
+| `JAMF_CLIENT_ID` | Yes | Jamf Pro API client ID |
+| `JAMF_CLIENT_SECRET` | Yes | Jamf Pro API client secret |
+| `SNIPE_IT_URL` | Yes | Snipe-IT instance URL |
+| `SNIPE_IT_API_TOKEN` | Yes | Snipe-IT API token |
+| `LOG_LEVEL` | No | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_FILE` | No | Custom log file path |
+| `SYNC_INTERVAL` | No | Sync interval in minutes (default: 60) |
+
+## 🧪 Testing & Troubleshooting
+
+### Test API Connections
+```bash
+# Test Jamf Pro connection
+python jamf-to-snipe.py --test-jamf
+
+# Test Snipe-IT connection
+python jamf-to-snipe.py --test-snipe
+
+# Test both connections
+python jamf-to-snipe.py --test
+```
+
+### Common Issues
+
+#### API Authentication Errors
+```bash
+# Verify credentials
+python jamf-to-snipe.py --verify-credentials
+
+# Test with verbose logging
+python jamf-to-snipe.py --test --verbose
+```
+
+#### Sync Failures
+```bash
+# Check last error
+python jamf-to-snipe.py --last-error
+
+# Run with debug logging
+python jamf-to-snipe.py --verbose --log-level DEBUG
+```
+
+#### Performance Issues
+```bash
+# Run partial sync
+python jamf-to-snipe.py --limit 100
+
+# Check sync performance
+python jamf-to-snipe.py --benchmark
+```
+
+## 📈 Features
+
+- ✅ **Automated Device Discovery**: Finds all Apple devices in Jamf Pro
+- ✅ **Smart Matching**: Matches devices by serial number and asset tags
+- ✅ **Incremental Sync**: Only updates changed data for efficiency
+- ✅ **Error Recovery**: Handles API failures gracefully with retry logic
+- ✅ **Comprehensive Logging**: Detailed logs for monitoring and debugging
+- ✅ **Flexible Scheduling**: Configurable sync intervals
+- ✅ **Data Validation**: Ensures data integrity between systems
+- ✅ **Manual Override**: Command-line tools for manual operations
+
+## 📋 Sync Process Flow
+
+1. **Authentication**: Authenticate with both Jamf Pro and Snipe-IT APIs
+2. **Device Discovery**: Retrieve all Apple devices from Jamf Pro
+3. **Asset Matching**: Find corresponding assets in Snipe-IT by serial number
+4. **Data Comparison**: Compare device information between systems
+5. **Update/Create**: Update existing assets or create new ones in Snipe-IT
+6. **Logging**: Record all changes and any errors encountered
+7. **Cleanup**: Handle any orphaned or outdated records
+
+## 🔐 Security
+
+- API credentials stored in environment variables
+- HTTPS-only communication with both APIs
+- No sensitive data logged
+- Regular credential rotation recommended
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📞 Support
+
+For issues or questions:
+- Check the logs: `/var/log/jamf-snipe-sync.log`
+- Review recent sync status: `python jamf-to-snipe.py --status`
+- Contact: IT Systems Team
 
 ---
 
-## What To Do If The System Fails or Goes Down
-
-### 1. **Check if the App is Running**
-```bash
-pm2 list
-```
-- If the status is not "online", restart:
-```bash
-pm2 restart loanerform
-```
-
-### 2. **Check Logs for Errors**
-```bash
-pm2 logs loanerform
-```
-- Look for errors related to port conflicts, build failures, or missing dependencies.
-
-### 3. **Rebuild the App**
-If you suspect a build or dependency issue:
-```bash
-cd /path/to/loanerform
-npm install
-npm run build
-pm2 restart loanerform
-```
-
-### 4. **Check Port Conflicts**
-If the app won't start, check if port 3000 is already in use:
-```bash
-lsof -i :3000
-```
-- Kill any conflicting processes:
-```bash
-kill -9 <PID>
-```
-
-### 5. **Verify Environment Variables**
-Ensure all required environment variables are set in `.env.local`:
-```env
-AZURE_CLIENT_ID=your_microsoft_365_client_id
-AZURE_CLIENT_SECRET=your_microsoft_365_client_secret
-AZURE_TENANT_ID=your_microsoft_365_tenant_id
-SNIPE_IT_URL=your_snipeit_instance_url
-SNIPE_IT_API_TOKEN=your_snipeit_api_token
-```
-
-### 6. **Check Microsoft 365 API Access**
-If user data isn't loading:
-- Verify Microsoft Graph API permissions
-- Check if the app registration is still active
-- Ensure group membership access is correct
-
-### 7. **Restart the Entire System (Last Resort)**
-If all else fails:
-```bash
-sudo reboot
-# After reboot, check if PM2 auto-starts the app
-pm2 list
-```
-
-## System Architecture
-
-- **Frontend**: Next.js 14 with React and TypeScript
-- **Styling**: Tailwind CSS for responsive design
-- **Backend**: API routes for user management and device inventory
-- **External APIs**: Microsoft 365 Graph API, Snipe-IT API
-- **Process Management**: PM2 for monitoring and auto-restart
-- **Deployment**: Linux VM with automatic failover
-
-## User Data Sources
-
-### Microsoft 365 Groups
-- **Staff Users**: Comprehensive staff profiles with departments and job titles
-- **Students**: 698+ student users from designated groups
-- **Teachers**: Teacher-specific user management
-
-### Snipe-IT Integration
-- **Device Inventory**: Real-time loaner device availability
-- **Category Focus**: Student loaner laptops (category ID 12)
-- **Status Tracking**: Device checkout and availability monitoring
-
-## Monitoring and Maintenance
-
-### Daily Checks
-- Verify PM2 status: `pm2 list`
-- Check recent logs: `pm2 logs loanerform --lines 50`
-- Monitor user data sync status in application logs
-
-### Weekly Maintenance
-- Review error logs for patterns
-- Verify Microsoft 365 API access
-- Check Snipe-IT connectivity
-
-### Monthly Tasks
-- Update dependencies: `npm update`
-- Review and rotate API credentials if needed
-- Monitor system performance and resource usage
-
----
-
-**Built for West Island College with ❤️ and modern web technologies**
+**Built for West Island College IT Department**  
+*Automated device inventory synchronization between Jamf Pro and Snipe-IT*
