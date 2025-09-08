@@ -278,6 +278,37 @@ python jamf-to-snipe.py --test
 
 ### Common Issues
 
+#### DNS Resolution Errors
+**Error:** `Failed to resolve 'snipe.mywic.ca' - No address associated with hostname`
+
+This indicates DNS issues with your Snipe-IT domain.
+
+**Solutions:**
+```bash
+# Check if domain resolves
+nslookup snipe.mywic.ca
+dig snipe.mywic.ca
+
+# Test direct IP connection (if you know the IP)
+ping your-snipe-it-ip-address
+
+# Check /etc/hosts file for local DNS entries
+cat /etc/hosts
+
+# Test with curl
+curl -I https://snipe.mywic.ca
+```
+
+**Fix DNS Issues:**
+```bash
+# Add to /etc/hosts if needed (replace with actual IP)
+echo "192.168.1.100 snipe.mywic.ca" | sudo tee -a /etc/hosts
+
+# Or update your environment to use IP instead of domain
+# In .env file:
+SNIPE_IT_URL=https://192.168.1.100  # Use actual IP
+```
+
 #### API Authentication Errors
 ```bash
 # Verify credentials
