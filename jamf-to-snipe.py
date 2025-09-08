@@ -387,9 +387,6 @@ def fetch_computer_details(device_id, headers, base_url):
                     prestage_name = str(source).strip()
                     break
         
-        # Determine category based on available information
-        category, category_reason = determine_category_from_device_info(general, location, prestage_name)
-        
         return {
             'device_id': device_id,
             'serial_number': general.get('serial_number'),
@@ -400,50 +397,11 @@ def fetch_computer_details(device_id, headers, base_url):
             'email': location.get('email_address', ''),
             'real_name': location.get('real_name', ''),
             'device_type': 'computer',
-            'prestage_name': prestage_name,
-            'category': category,
-            'category_reason': category_reason
+            'prestage_name': prestage_name
         }
     except Exception as e:
         logger.error(f"Error fetching computer details for {device_id}: {str(e)}")
         return None
-
-def determine_category_from_device_info(general, location, prestage_name):
-    """Determine Snipe-IT category based on available device information"""
-    # Check prestage name first
-    if prestage_name:
-        prestage_lower = prestage_name.lower()
-        if 'student' in prestage_lower or 'loaner' in prestage_lower:
-            logger.info(f"Category determined by prestage '{prestage_name}' → Student")
-            return CATEGORIES['student'], 'prestage'
-        elif 'ssc' in prestage_lower:
-            logger.info(f"Category determined by prestage '{prestage_name}' → SSC")
-            return CATEGORIES['ssc'], 'prestage'
-        elif 'staff' in prestage_lower or 'teacher' in prestage_lower or 'employee' in prestage_lower:
-            logger.info(f"Category determined by prestage '{prestage_name}' → Staff")
-            return CATEGORIES['staff'], 'prestage'
-    
-    # Check user email patterns
-    email = location.get('email_address', '').lower()
-    if email:
-        # Student email patterns (customize based on your school's pattern)
-        if any(pattern in email for pattern in ['student', '@students.', 'pupil']):
-            logger.info(f"Category determined by email pattern '{email}' → Student")
-            return CATEGORIES['student'], 'email'
-    
-    # Check device name patterns
-    device_name = general.get('name', '').lower()
-    if device_name:
-        if any(pattern in device_name for pattern in ['student', 'loaner', 'loan']):
-            logger.info(f"Category determined by device name '{device_name}' → Student")
-            return CATEGORIES['student'], 'device_name'
-        elif 'ssc' in device_name:
-            logger.info(f"Category determined by device name '{device_name}' → SSC")
-            return CATEGORIES['ssc'], 'device_name'
-    
-    # Default to staff (no clear indicators)
-    logger.info(f"Category defaulted to Staff (no clear indicators found)")
-    return CATEGORIES['staff'], None
 
 def fetch_devices_from_group(group_id, device_type='computers'):
     """Fetch devices from a specific Jamf Pro smart group"""
