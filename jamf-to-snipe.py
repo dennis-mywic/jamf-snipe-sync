@@ -71,7 +71,8 @@ SMART_GROUPS = {
     'computers': {
         'all_staff_mac': {'id': 22, 'name': "All Staff Mac"},
         'student_loaners': {'id': 3, 'name': "Student Loaners"},
-        'ssc_laptops': {'id': 25, 'name': "SSC Laptops", 'category': 'ssc'}
+        'ssc_laptops': {'id': 25, 'name': "SSC Laptops", 'category': 'ssc'},
+        'operations_mac': {'id': 5, 'name': "Operations Mac"}
     },
     'mobile_devices': {
         'apple_tvs': {'id': 1, 'name': "Apple TVs", 'category': 'appletv'},
@@ -155,8 +156,106 @@ def get_jamf_headers():
         logger.error(f"Error getting headers: {str(e)}")
         return None
 
-# Cache for user lookups
+# Cache for user lookups and prestage lookups
 user_cache = {}
+prestage_cache = {}
+
+def get_prestage_enrollments():
+    """Fetch all prestage enrollments from Jamf Pro"""
+    headers = get_jamf_headers()
+    if not headers:
+        logger.error("Failed to get Jamf headers for prestage lookup")
+        return {}
+    
+    try:
+        # Get computer prestages
+        url = f"{JAMF_URL}/api/v1/computer-prestages"
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        
+        prestages = {}
+        prestage_data = resp.json().get('results', [])
+        
+        for prestage in prestage_data:
+            prestage_id = prestage.get('id')
+            prestage_name = prestage.get('displayName', '').lower()
+            prestages[prestage_id] = {
+                'id': prestage_id,
+                'name': prestage_name,
+                'category': determine_category_from_prestage_name(prestage_name)
+            }
+        
+        logger.info(f"Found {len(prestages)} computer prestage enrollments")
+        for pid, pdata in prestages.items():
+            logger.info(f"  - Prestage ID {pid}: '{pdata['name']}' → Category: {pdata['category']['name']}")
+        
+        return prestages
+        
+    except Exception as e:
+        logger.error(f"Error fetching prestage enrollments: {str(e)}")
+        return {}
+
+def determine_category_from_prestage_name(prestage_name):
+    """Determine Snipe-IT category based on prestage enrollment name"""
+    prestage_lower = prestage_name.lower()
+    
+    if 'student' in prestage_lower or 'loaner' in prestage_lower:
+        return CATEGORIES['student']
+    elif 'ssc' in prestage_lower:
+        return CATEGORIES['ssc']
+    elif 'staff' in prestage_lower or 'teacher' in prestage_lower or 'employee' in prestage_lower:
+        return CATEGORIES['staff']
+    else:
+        # Default to staff if unclear
+        logger.warning(f"Unknown prestage name '{prestage_name}', defaulting to staff category")
+        return CATEGORIES['staff']
+
+def get_device_prestage(device_id):
+    """Get the prestage enrollment for a specific device"""
+    if device_id in prestage_cache:
+        return prestage_cache[device_id]
+    
+    headers = get_jamf_headers()
+    if not headers:
+        logger.error("Failed to get Jamf headers for device prestage lookup")
+        return None
+    
+    try:
+        # Get device details to find prestage assignment
+        url = f"{JAMF_URL}/api/v1/computers-inventory-detail/id/{device_id}"
+        resp = jamf_session.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        
+        device_data = resp.json()
+        prestage_id = device_data.get('general', {}).get('enrollmentMethodPrestage', {}).get('id')
+        
+        if prestage_id:
+            # Get prestage details
+            prestage_url = f"{JAMF_URL}/api/v1/computer-prestages/{prestage_id}"
+            prestage_resp = jamf_session.get(prestage_url, headers=headers, timeout=30)
+            prestage_resp.raise_for_status()
+            
+            prestage_info = prestage_resp.json()
+            prestage_name = prestage_info.get('displayName', '')
+            
+            result = {
+                'id': prestage_id,
+                'name': prestage_name,
+                'category': determine_category_from_prestage_name(prestage_name)
+            }
+            
+            prestage_cache[device_id] = result
+            logger.debug(f"Device {device_id} has prestage '{prestage_name}' → Category: {result['category']['name']}")
+            return result
+        else:
+            logger.warning(f"Device {device_id} has no prestage enrollment")
+            prestage_cache[device_id] = None
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting prestage for device {device_id}: {str(e)}")
+        prestage_cache[device_id] = None
+        return None
 
 @lru_cache(maxsize=100)
 def get_or_create_model(model_name: str, category_id: int, snipe_headers: dict) -> int:
@@ -358,6 +457,7 @@ def fetch_computer_details(device_id, headers, base_url):
         location = device_data.get('location', {})
         
         return {
+            'device_id': device_id,  # Include device ID for prestage lookup
             'serial_number': device_data.get('general', {}).get('serial_number'),
             'model': device_data.get('hardware', {}).get('model'),
             'asset_tag': device_data.get('general', {}).get('asset_tag'),
@@ -586,6 +686,10 @@ def main():
     list_smart_groups('computers')
     list_smart_groups('mobile_devices')
     
+    # Fetch prestage enrollments for accurate categorization
+    logger.info("Fetching prestage enrollments from Jamf Pro...")
+    prestages = get_prestage_enrollments()
+    
     # Set up Snipe-IT headers
     snipe_headers = {
         'Authorization': f'Bearer {SNIPE_IT_API_TOKEN}',
@@ -595,19 +699,39 @@ def main():
     
     all_devices = []
     
-    # Fetch computers from staff, student, and SSC groups
+    # Fetch computers from smart groups (but use prestage for categorization)
     logger.info("Fetching computers from Jamf Pro...")
     for group_name, group_info in SMART_GROUPS['computers'].items():
         devices = fetch_devices_from_group(group_info['id'], 'computers')
-        if group_name == 'student_loaners':
-            for device in devices:
-                device['category'] = CATEGORIES['student']
-        elif group_name == 'ssc_laptops':
-            for device in devices:
-                device['category'] = CATEGORIES['ssc']
-        else:
-            for device in devices:
-                device['category'] = CATEGORIES['staff']
+        
+        # For each computer, determine category based on prestage enrollment
+        for device in devices:
+            device_id = device.get('device_id')
+            if device_id:
+                prestage_info = get_device_prestage(device_id)
+                if prestage_info:
+                    device['category'] = prestage_info['category']
+                    device['prestage_name'] = prestage_info['name']
+                    logger.info(f"Device {device.get('serial_number')} has prestage '{prestage_info['name']}' → Category: {prestage_info['category']['name']}")
+                else:
+                    # Fallback to smart group-based logic if no prestage found
+                    logger.warning(f"No prestage found for device {device.get('serial_number')}, using smart group fallback")
+                    if group_name == 'student_loaners':
+                        device['category'] = CATEGORIES['student']
+                    elif group_name == 'ssc_laptops':
+                        device['category'] = CATEGORIES['ssc']
+                    else:
+                        device['category'] = CATEGORIES['staff']
+            else:
+                # Fallback for devices without device_id
+                logger.warning(f"No device ID for {device.get('serial_number')}, using smart group categorization")
+                if group_name == 'student_loaners':
+                    device['category'] = CATEGORIES['student']
+                elif group_name == 'ssc_laptops':
+                    device['category'] = CATEGORIES['ssc']
+                else:
+                    device['category'] = CATEGORIES['staff']
+        
         all_devices.extend(devices)
     
     # Fetch mobile devices
