@@ -95,19 +95,25 @@ python jamf-to-snipe.py --test
 
 ### Manual Execution
 
+> **Note:** On Ubuntu/Debian systems, you may need to use `python3` instead of `python`. See troubleshooting section below if you get "Command 'python' not found".
+
 #### Basic Sync (All Devices)
 ```bash
 python jamf-to-snipe.py
+# Or on Ubuntu/Debian systems:
+python3 jamf-to-snipe.py
 ```
 
 #### Sync with Verbose Logging
 ```bash
 python jamf-to-snipe.py --verbose
+# Or: python3 jamf-to-snipe.py --verbose
 ```
 
 #### Dry Run (Test Without Changes)
 ```bash
 python jamf-to-snipe.py --dry-run
+# Or: python3 jamf-to-snipe.py --dry-run
 ```
 
 #### Sync Specific Device Types
@@ -218,16 +224,56 @@ python jamf-to-snipe.py --stats
 
 ## 🧪 Testing & Troubleshooting
 
+### Python Command Issues
+
+#### "Command 'python' not found" Error
+This is common on Ubuntu/Debian systems where `python` command isn't available by default.
+
+**Solution 1: Use python3 directly**
+```bash
+python3 jamf-to-snipe.py --verbose
+```
+
+**Solution 2: Install python-is-python3 (Recommended)**
+```bash
+sudo apt update
+sudo apt install python-is-python3
+# Now 'python' command will work
+python jamf-to-snipe.py --verbose
+```
+
+**Solution 3: Check Python installation**
+```bash
+# Check if Python3 is installed
+which python3
+python3 --version
+
+# Install if missing
+sudo apt update
+sudo apt install python3 python3-pip
+```
+
+**Install Dependencies**
+```bash
+# Install required packages
+pip3 install -r requirements.txt
+# Or if pip3 doesn't work:
+python3 -m pip install -r requirements.txt
+```
+
 ### Test API Connections
 ```bash
 # Test Jamf Pro connection
 python jamf-to-snipe.py --test-jamf
+# Or: python3 jamf-to-snipe.py --test-jamf
 
 # Test Snipe-IT connection
 python jamf-to-snipe.py --test-snipe
+# Or: python3 jamf-to-snipe.py --test-snipe
 
 # Test both connections
 python jamf-to-snipe.py --test
+# Or: python3 jamf-to-snipe.py --test
 ```
 
 ### Common Issues
