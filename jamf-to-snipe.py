@@ -240,8 +240,8 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
     if email_lower in user_cache:
         return user_cache[email_lower]
     
-    # Delay before API call to prevent rate limiting
-    time.sleep(2)  # Conservative delay for user lookups
+    # Minimal delay for user lookups
+    time.sleep(0.1)
     
     try:
         # Try variations of the email
@@ -276,7 +276,7 @@ def _get_user(email: str, headers_tuple: tuple) -> int:
         
         # Special handling for Kirsten Anderson
         if 'anderson' in email_lower:
-            time.sleep(2)  # Conservative delay for alternate email lookup
+            time.sleep(0.1)  # Minimal delay for alternate email lookup
             alt_email = 'kirsten.anderson@mywic.org'
             url = f"{SNIPE_IT_URL}/api/v1/users?email={urllib.parse.quote(alt_email)}&limit=1"
             
@@ -557,8 +557,8 @@ def process_device(device, snipe_headers, device_category):
         serial = device.get('serial_number')
         logger.info(f"Processing device {serial}")
         
-        # Conservative delay at the start of each device processing
-        time.sleep(5)  # Conservative delay to prevent API rate limiting
+        # Minimal delay to prevent API rate limiting
+        time.sleep(0.2)
         
         # Convert headers to tuple for caching
         headers_tuple = tuple(sorted(snipe_headers.items()))
@@ -658,8 +658,8 @@ def process_device(device, snipe_headers, device_category):
                 'note': f"Automatically checked out via Jamf sync on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             }
             
-            # Conservative delay before checkout
-            time.sleep(3)  # Conservative delay to prevent rate limiting during checkout
+            # Minimal delay before checkout
+            time.sleep(0.1)
             
             checkout_url = f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}/checkout"
             try:
@@ -736,26 +736,27 @@ def main():
     
     logger.info(f"Found total of {len(all_devices)} devices")
     
-    # Process all devices sequentially to avoid rate limiting
+    # Process devices with controlled concurrency for speed + accuracy
     success_count = 0
     total_devices = len(all_devices)
     
-    for i, device in enumerate(all_devices, 1):
-        serial = device.get('serial_number', 'Unknown')
-        logger.info(f"Processing device {i}/{total_devices}: {serial}")
+    with ThreadPoolExecutor(max_workers=5) as executor:  # 5 concurrent workers
+        futures = []
+        for device in all_devices:
+            future = executor.submit(process_device, device, snipe_headers, device['category'])
+            futures.append((future, device.get('serial_number')))
+            time.sleep(0.05)  # Small delay between submissions
         
-        try:
-            if process_device(device, snipe_headers, device['category']):
-                success_count += 1
-                logger.info(f"Successfully processed device {serial}")
-            else:
-                logger.warning(f"Failed to process device {serial}")
-        except Exception as e:
-            logger.error(f"Error processing device {serial}: {str(e)}")
-        
-        # Wait between each device to prevent rate limiting
-        if i < total_devices:  # Don't sleep after the last device
-            time.sleep(5)  # Conservative delay between devices to prevent rate limiting
+        # Process results
+        for i, (future, serial) in enumerate(futures, 1):
+            try:
+                if future.result():
+                    success_count += 1
+                    logger.info(f"Successfully processed device {serial} ({i}/{total_devices})")
+                else:
+                    logger.warning(f"Failed to process device {serial}")
+            except Exception as e:
+                logger.error(f"Error processing device {serial}: {str(e)}")
     
     logger.info(f"Sync completed. Successfully processed {success_count} out of {len(all_devices)} devices")
 
