@@ -544,78 +544,87 @@ def list_smart_groups(device_type='computers'):
         logger.error(f"Error fetching {device_type} groups: {str(e)}")
 
 def process_device(device, snipe_headers, device_category):
-    """Process a single device for syncing"""
-    try:
-        serial = device.get('serial_number')
-        logger.info(f"Processing device {serial}")
-        
-        # Minimal delay to prevent API rate limiting
-        time.sleep(0.2)
-        
-        # Convert headers to tuple for caching
-        headers_tuple = tuple(sorted(snipe_headers.items()))
-        
-        # Get or create model ID using the actual device model from Jamf
-        model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
-        if not model_id:
-            logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
-            return False
+    """Process a single device for syncing with retry logic"""
+    serial = device.get('serial_number')
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        try:
+            if attempt > 0:
+                # Exponential backoff: 1s, 2s, 4s
+                backoff_time = 2 ** (attempt - 1)
+                logger.info(f"Retrying device {serial} (attempt {attempt + 1}) after {backoff_time}s delay")
+                time.sleep(backoff_time)
             
-        # Get user ID if available
-        user_id = None
-        email = device.get('email')
-        if email:
-            try:
-                user_id = _get_user(email, headers_tuple)
-                if user_id:
-                    logger.info(f"Successfully found user ID {user_id} for email {email}")
+            logger.info(f"Processing device {serial} (attempt {attempt + 1})")
+            
+            # Minimal delay to prevent API rate limiting
+            time.sleep(0.2)
+            
+            # Convert headers to tuple for caching
+            headers_tuple = tuple(sorted(snipe_headers.items()))
+            
+            # Get or create model ID using the actual device model from Jamf
+            model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
+            if not model_id:
+                logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
+                continue  # Try again on next attempt
+            
+            # Get user ID if available
+            user_id = None
+            email = device.get('email')
+            if email:
+                try:
+                    user_id = _get_user(email, headers_tuple)
+                    if user_id:
+                        logger.info(f"Successfully found user ID {user_id} for email {email}")
+                    else:
+                        logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
+                except Exception as e:
+                    logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
+            
+            # Prepare asset data with BULLETPROOF category assignment
+            asset_data = {
+                'asset_tag': serial,
+                'serial': serial,
+                'model_id': model_id,
+                'category_id': device_category['id'],
+                'name': device.get('device_name'),
+                'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+            
+            # BULLETPROOF: Log exactly what category we're assigning
+            logger.info(f"BULLETPROOF: Device {serial} → Category ID {device_category['id']} ({device_category['name']})")
+            
+            # Check if asset exists
+            url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
+            resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
+            
+            # Only set status_id for new assets
+            if resp.status_code != 200 or not resp.json().get('rows'):
+                asset_data['status_id'] = 2  # Deployable
+            
+            asset_id = None
+            if resp.status_code == 200 and resp.json().get('rows'):
+                # Update existing asset
+                asset_id = resp.json().get('rows')[0].get('id')
+                existing_category = resp.json().get('rows')[0].get('category', {})
+                existing_category_name = existing_category.get('name', 'Unknown')
+                logger.info(f"BULLETPROOF: Updating existing asset {asset_id} for serial {serial}")
+                logger.info(f"BULLETPROOF: Changing category from '{existing_category_name}' to '{device_category['name']}'")
+                resp = snipe_session.put(
+                    f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
+                    headers=snipe_headers,
+                    json=asset_data,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    logger.info(f"BULLETPROOF: Successfully updated asset {asset_id} - Category should now be '{device_category['name']}'")
                 else:
-                    logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
-            except Exception as e:
-                logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
-        
-        # Prepare asset data with BULLETPROOF category assignment
-        asset_data = {
-            'asset_tag': serial,
-            'serial': serial,
-            'model_id': model_id,
-            'category_id': device_category['id'],
-            'name': device.get('device_name'),
-            'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        }
-        
-        # BULLETPROOF: Log exactly what category we're assigning
-        logger.info(f"BULLETPROOF: Device {serial} → Category ID {device_category['id']} ({device_category['name']})")
-        
-        # Check if asset exists
-        url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
-        resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
-        
-        # Only set status_id for new assets
-        if resp.status_code != 200 or not resp.json().get('rows'):
-            asset_data['status_id'] = 2  # Deployable
-        
-        asset_id = None
-        if resp.status_code == 200 and resp.json().get('rows'):
-            # Update existing asset
-            asset_id = resp.json().get('rows')[0].get('id')
-            existing_category = resp.json().get('rows')[0].get('category', {})
-            existing_category_name = existing_category.get('name', 'Unknown')
-            logger.info(f"BULLETPROOF: Updating existing asset {asset_id} for serial {serial}")
-            logger.info(f"BULLETPROOF: Changing category from '{existing_category_name}' to '{device_category['name']}'")
-            resp = snipe_session.put(
-                f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
-                headers=snipe_headers,
-                json=asset_data,
-                timeout=30
-            )
-            if resp.status_code == 200:
-                logger.info(f"BULLETPROOF: Successfully updated asset {asset_id} - Category should now be '{device_category['name']}'")
+                    logger.error(f"BULLETPROOF: Failed to update asset {asset_id} - Status: {resp.status_code}, Response: {resp.text}")
             else:
-                logger.error(f"BULLETPROOF: Failed to update asset {asset_id} - Status: {resp.status_code}, Response: {resp.text}")
-        else:
-            # Create new asset
-            logger.info(f"Creating new asset for serial {serial}")
+                # Create new asset
+                logger.info(f"Creating new asset for serial {serial}")
             resp = snipe_session.post(
                 f"{SNIPE_IT_URL}/api/v1/hardware",
                 headers=snipe_headers,
@@ -718,23 +727,51 @@ def main():
     success_count = 0
     total_devices = len(all_devices)
     
-    with ThreadPoolExecutor(max_workers=5) as executor:  # 5 concurrent workers
-        futures = []
-        for device in all_devices:
-            future = executor.submit(process_device, device, snipe_headers, device['category'])
-            futures.append((future, device.get('serial_number')))
-            time.sleep(0.05)  # Small delay between submissions
+    # Process devices with automatic retry for 100% success rate
+    max_retries = 3
+    failed_devices = []
+    
+    for attempt in range(max_retries):
+        devices_to_process = all_devices if attempt == 0 else failed_devices
+        failed_devices = []
         
-        # Process results
-        for i, (future, serial) in enumerate(futures, 1):
-            try:
-                if future.result():
-                    success_count += 1
-                    logger.info(f"Successfully processed device {serial} ({i}/{total_devices})")
-                else:
-                    logger.warning(f"Failed to process device {serial}")
-            except Exception as e:
-                logger.error(f"Error processing device {serial}: {str(e)}")
+        if attempt > 0:
+            logger.info(f"Retry attempt {attempt} for {len(devices_to_process)} failed devices")
+            time.sleep(2)  # Longer delay between retry attempts
+        
+        with ThreadPoolExecutor(max_workers=3 if attempt == 0 else 2) as executor:  # Fewer workers on retry
+            futures = []
+            for device in devices_to_process:
+                future = executor.submit(process_device, device, snipe_headers, device['category'])
+                futures.append((future, device))
+                time.sleep(0.1 if attempt == 0 else 0.2)  # More conservative on retries
+            
+            # Process results
+            for i, (future, device) in enumerate(futures, 1):
+                serial = device.get('serial_number')
+                try:
+                    if future.result():
+                        success_count += 1
+                        logger.info(f"Successfully processed device {serial} ({success_count}/{total_devices})")
+                    else:
+                        failed_devices.append(device)
+                        logger.warning(f"Failed to process device {serial} - will retry")
+                except Exception as e:
+                    failed_devices.append(device)
+                    logger.error(f"Error processing device {serial}: {str(e)} - will retry")
+        
+        # If no failures, we're done
+        if not failed_devices:
+            logger.info(f"All devices processed successfully on attempt {attempt + 1}")
+            break
+    
+    # Final report
+    if failed_devices:
+        logger.error(f"FAILED: {len(failed_devices)} devices could not be processed after {max_retries} attempts:")
+        for device in failed_devices:
+            logger.error(f"  - {device.get('serial_number')}")
+    else:
+        logger.info("SUCCESS: 100% of devices processed successfully!")
     
     logger.info(f"Sync completed. Successfully processed {success_count} out of {len(all_devices)} devices")
 
