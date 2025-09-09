@@ -66,6 +66,14 @@ CATEGORIES = {
     'appletv': {'id': 11, 'name': 'Apple TVs'}
 }
 
+# Model IDs for each category - models determine the actual category in Snipe-IT
+MODELS = {
+    'staff': 37,      # MacBook Pro (13-inch, 2020, Two Thunderbolt 3 ports)
+    'student': 82,    # MacBook Pro Student Loaner  
+    'ssc': 37,        # Use staff model for SSC for now
+    'default': 37     # Default to staff model for unknown categories
+}
+
 # Smart group IDs
 SMART_GROUPS = {
     'computers': {
@@ -555,11 +563,25 @@ def process_device(device, snipe_headers, device_category):
         # Convert headers to tuple for caching
         headers_tuple = tuple(sorted(snipe_headers.items()))
         
-        # Get model ID
-        model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
+        # Get correct model ID based on category
+        category_name = device_category['name'].lower()
+        if 'student' in category_name:
+            model_id = MODELS['student']
+        elif 'ssc' in category_name:
+            model_id = MODELS['ssc']
+        elif 'staff' in category_name:
+            model_id = MODELS['staff']
+        else:
+            model_id = MODELS['default']
+        
+        logger.info(f"Using model ID {model_id} for category '{device_category['name']}'")
+        
+        # Fallback: if model doesn't exist, try to create it
         if not model_id:
-            logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
-            return False
+            model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
+            if not model_id:
+                logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
+                return False
             
         # Get user ID if available
         user_id = None
