@@ -411,19 +411,6 @@ def fetch_computer_details(device_id, headers, base_url):
 def determine_category_from_prestage_info(prestage_name, general, location):
     """Determine Snipe-IT category based on prestage enrollment and device information"""
     
-    # BULLETPROOF: Hard-coded serial number mappings for known devices
-    serial = general.get('serial_number', '')
-    if serial:
-        # Known student/loaner devices that should NEVER be categorized as staff
-        student_serials = [
-            'C02D45SRP3Y1',  # The problematic 45SR device
-            # Add more known student device serials here as needed
-        ]
-        
-        if serial in student_serials:
-            logger.info(f"Category determined by HARD-CODED serial mapping '{serial}' → Student (GUARANTEED)")
-            return CATEGORIES['student'], 'hard_coded_serial'
-    
     # Check prestage name first (most accurate)
     if prestage_name:
         prestage_lower = prestage_name.lower()
