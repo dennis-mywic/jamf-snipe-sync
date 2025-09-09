@@ -8,11 +8,14 @@ This Python-based system automatically synchronizes device information between J
 
 ## 🔄 What It Does
 
-- **Bi-directional Sync**: Pulls device data from Jamf Pro and updates/creates corresponding assets in Snipe-IT
+- **Complete Device Sync**: Synchronizes computers, iPads, and Apple TVs from Jamf Pro to Snipe-IT
+- **Prestage-Based Categorization**: Uses Jamf prestage enrollments for 100% accurate device categorization
+- **User Checkout Management**: Automatically assigns staff devices to users based on Jamf data
+- **Mobile Device Support**: Full support for iPads and Apple TVs with proper categorization
 - **Real-time Updates**: Keeps device information current including names, serial numbers, and status
-- **Automated Execution**: Runs on a schedule via systemd timers for hands-off operation
+- **Automated Execution**: Runs on a schedule via cron jobs for hands-off operation
 - **Error Handling**: Robust logging and error recovery for reliable operation
-- **Apple Device Focus**: Specifically designed for macOS devices (MacBooks, iMacs, etc.)
+- **Category-Specific Models**: Prevents Snipe-IT model category overrides for accurate classification
 
 ## 🏗️ System Architecture
 
@@ -33,15 +36,22 @@ This Python-based system automatically synchronizes device information between J
 
 ```
 jamf-snipe-sync/
-├── jamf-to-snipe.py           # Main synchronization script
-├── requirements.txt           # Python dependencies
-├── .env.backup               # Environment variable template
-├── ecosystem.config.js       # PM2 configuration
-├── package.json             # Node.js dependencies (if any)
-├── systemd/                 # Systemd service files
+├── jamf-to-snipe-prestage-bulletproof.py  # Enhanced sync script (RECOMMENDED)
+├── jamf-to-snipe.py                       # Legacy synchronization script
+├── requirements.txt                       # Python dependencies
+├── .env.backup                           # Environment variable template
+├── run-daily-sync.sh                     # Automated execution wrapper
+├── wipe-all-devices-aggressive.py        # Cleanup utility
+├── fix-apple-manufacturer.py             # Manufacturer correction tool
+├── fix-apple-models.py                   # Model correction tool
+├── detailed-comparison.py                # Device analysis utility
+├── find-missing-devices.py               # Missing device detection
+├── ecosystem.config.js                   # PM2 configuration
+├── package.json                          # Node.js dependencies (if any)
+├── systemd/                              # Systemd service files
 │   ├── jamf-snipe-sync.service
 │   └── jamf-snipe-sync.timer
-└── apple-device-sync/       # Additional sync modules (submodule)
+└── apple-device-sync/                    # Additional sync modules (submodule)
 ```
 
 ## 🛠️ Installation & Setup
@@ -97,7 +107,13 @@ python jamf-to-snipe.py --test
 
 > **Note:** On Ubuntu/Debian systems, you may need to use `python3` instead of `python`. See troubleshooting section below if you get "Command 'python' not found".
 
-#### Basic Sync (All Devices)
+#### Enhanced Script (Recommended)
+```bash
+# Use the enhanced script with prestage-based categorization
+python3 jamf-to-snipe-prestage-bulletproof.py
+```
+
+#### Legacy Script (Basic Sync)
 ```bash
 python jamf-to-snipe.py
 # Or on Ubuntu/Debian systems:
@@ -141,7 +157,60 @@ python jamf-to-snipe.py --log-file /custom/path/sync.log
 
 ### Automated Execution
 
-#### Using Systemd (Recommended)
+#### Using Cron (Recommended for Daily Sync)
+
+**1. Set up timezone (if needed):**
+```bash
+# Set server timezone to your local timezone
+sudo timedatectl set-timezone America/Denver  # For MST
+# Verify timezone
+timedatectl
+```
+
+**2. Create wrapper script:**
+```bash
+sudo nano /opt/jamf-snipe-sync/run-daily-sync.sh
+```
+
+Add this content:
+```bash
+#!/bin/bash
+# Daily Jamf to Snipe-IT Sync
+
+LOG_FILE="/var/log/jamf-snipe-sync.log"
+SCRIPT_DIR="/opt/jamf-snipe-sync"
+
+echo "=== Jamf Sync Started: $(date) ===" >> "$LOG_FILE"
+cd "$SCRIPT_DIR"
+
+if [ -f .env ]; then
+    source .env
+fi
+
+/usr/bin/python3 jamf-to-snipe-prestage-bulletproof.py >> "$LOG_FILE" 2>&1
+
+echo "=== Jamf Sync Completed: $(date) ===" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+```
+
+**3. Make script executable:**
+```bash
+sudo chmod +x /opt/jamf-snipe-sync/run-daily-sync.sh
+```
+
+**4. Add to cron for daily execution:**
+```bash
+crontab -e
+# Add this line for 2:00 AM daily:
+0 2 * * * /opt/jamf-snipe-sync/run-daily-sync.sh
+```
+
+**5. Verify cron job:**
+```bash
+crontab -l
+```
+
+#### Using Systemd (Alternative)
 
 1. **Install systemd files:**
 ```bash
@@ -160,14 +229,6 @@ sudo systemctl start jamf-snipe-sync.timer
 ```bash
 sudo systemctl status jamf-snipe-sync.timer
 sudo systemctl status jamf-snipe-sync.service
-```
-
-#### Using PM2 (Alternative)
-
-```bash
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
 ```
 
 ## 📊 Monitoring & Logs
@@ -338,14 +399,30 @@ python jamf-to-snipe.py --benchmark
 
 ## 📈 Features
 
+### Core Functionality
+- ✅ **Complete Device Coverage**: Syncs computers, iPads, and Apple TVs from Jamf Pro
+- ✅ **Prestage-Based Categorization**: Uses Jamf prestage enrollments for 100% accurate categorization
+- ✅ **User Checkout Management**: Automatically assigns staff devices to users based on Jamf data
+- ✅ **Category-Specific Models**: Creates models with correct categories to prevent Snipe-IT overrides
+- ✅ **Smart Device Matching**: Matches devices by serial number and asset tags
+
+### Device Categories Supported
+- 🖥️ **Staff Mac Laptops**: MacBooks assigned to staff with user checkout
+- 💻 **Student Loaner Laptops**: MacBooks for student use (available for checkout)
+- 🏢 **SSC Laptops**: Student Success Center devices
+- 📱 **Teacher iPads**: iPads assigned to staff members
+- 🖥️ **Check-In iPads**: Kiosk iPads for student check-ins
+- 📺 **Apple TVs**: Classroom and boardroom Apple TV devices
+
+### Technical Features
 - ✅ **Automated Device Discovery**: Finds all Apple devices in Jamf Pro
-- ✅ **Smart Matching**: Matches devices by serial number and asset tags
-- ✅ **Incremental Sync**: Only updates changed data for efficiency
 - ✅ **Error Recovery**: Handles API failures gracefully with retry logic
+- ✅ **Sequential Processing**: Prevents API rate limiting with intelligent delays
 - ✅ **Comprehensive Logging**: Detailed logs for monitoring and debugging
-- ✅ **Flexible Scheduling**: Configurable sync intervals
+- ✅ **Flexible Scheduling**: Configurable sync intervals via cron
 - ✅ **Data Validation**: Ensures data integrity between systems
 - ✅ **Manual Override**: Command-line tools for manual operations
+- ✅ **Utility Scripts**: Cleanup and maintenance tools included
 
 ## 📋 Sync Process Flow
 
