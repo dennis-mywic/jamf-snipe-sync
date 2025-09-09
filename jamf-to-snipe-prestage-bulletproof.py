@@ -128,24 +128,89 @@ def get_device_prestage_info(device_id, headers, inventory_data=None):
             'model': model,
             'email': email,
             'username': username,
-            'enrolled_via_automated': general.get('enrolledViaAutomatedDeviceEnrollment', False)
+            'realname': realname,
+            'enrolled_via_automated': general.get('enrolledViaAutomatedDeviceEnrollment', False),
+            'device_type': 'computer'
         }
         
     except Exception as e:
         logger.error(f"Error getting prestage info for device {device_id}: {str(e)}")
         return None
 
-def determine_category_from_prestage(prestage_name, device_name, email):
+def get_mobile_device_prestage_info(device_id, headers, device_data=None):
+    """Get prestage enrollment information from mobile device details using Modern API"""
+    try:
+        url = f"{JAMF_URL}/api/v2/mobile-devices/{device_id}/detail"
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Get prestage enrollment method (e.g., "PreStage enrollment: Staff iPads (1)")
+        enrollment_method = data.get('enrollmentMethod', '')
+        prestage_name = enrollment_method if enrollment_method else ''
+        
+        # Extract device info from the API response or from the initial device data
+        serial_number = data.get('serialNumber', '')
+        device_name = data.get('name', '')
+        model = data.get('model', '') if data else device_data.get('model', '') if device_data else ''
+        
+        # Use device_data if available for consistency with the main mobile device list
+        if device_data:
+            serial_number = device_data.get('serialNumber', serial_number)
+            device_name = device_data.get('name', device_name)
+            model = device_data.get('model', model)
+        
+        # Extract user info - mobile devices have username field
+        username = data.get('username', '') if data else device_data.get('username', '') if device_data else ''
+        email = username if username and '@' in username else ''
+        
+        # Debug logging for user info
+        if email:
+            logger.info(f"  ✅ Found email: {email} for mobile device {serial_number}")
+        else:
+            logger.debug(f"  ❌ No email found for mobile device {serial_number}")
+        
+        return {
+            'prestage_name': prestage_name,
+            'device_name': device_name,
+            'serial_number': serial_number,
+            'model': model,
+            'email': email,
+            'username': username,
+            'realname': '',  # Mobile devices don't typically have realname
+            'enrolled_via_automated': True if prestage_name else False,
+            'device_type': 'mobile'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting mobile device prestage info for device {device_id}: {str(e)}")
+        return None
+
+def determine_category_from_prestage(prestage_name, device_name, email, device_model=''):
     """Determine Snipe-IT category based on prestage enrollment - 100% ACCURATE"""
     
     # Convert to lowercase for comparison
     prestage_lower = prestage_name.lower() if prestage_name else ''
     device_lower = device_name.lower() if device_name else ''
     email_lower = email.lower() if email else ''
+    model_lower = device_model.lower() if device_model else ''
     
     # PRESTAGE-BASED CATEGORIZATION (Most Accurate)
     if prestage_lower:
-        if 'student' in prestage_lower or 'loaner' in prestage_lower:
+        # Mobile device prestages
+        if 'staff ipads' in prestage_lower:
+            logger.info(f"PRESTAGE: '{prestage_name}' → Teacher iPad (mobile device prestage)")
+            return CATEGORIES['teacher_ipad']
+        elif 'kiosk ipad' in prestage_lower:
+            logger.info(f"PRESTAGE: '{prestage_name}' → Check-In iPad (mobile device prestage)")
+            return CATEGORIES['checkin_ipad']
+        elif 'apple tv' in prestage_lower:
+            logger.info(f"PRESTAGE: '{prestage_name}' → Apple TV (mobile device prestage)")
+            return CATEGORIES['appletv']
+        
+        # Computer prestages
+        elif 'student' in prestage_lower or 'loaner' in prestage_lower:
             logger.info(f"PRESTAGE: '{prestage_name}' → Student (prestage contains 'student' or 'loaner')")
             return CATEGORIES['student']
         elif 'ssc' in prestage_lower:
@@ -154,6 +219,15 @@ def determine_category_from_prestage(prestage_name, device_name, email):
         elif 'staff' in prestage_lower or 'employee' in prestage_lower:
             logger.info(f"PRESTAGE: '{prestage_name}' → Staff (prestage contains 'staff' or 'employee')")
             return CATEGORIES['staff']
+    
+    # MODEL-BASED CATEGORIZATION (for mobile devices without clear prestage)
+    if model_lower:
+        if 'apple tv' in model_lower:
+            logger.info(f"MODEL: '{device_model}' → Apple TV (device model)")
+            return CATEGORIES['appletv']
+        elif 'ipad' in model_lower:
+            logger.info(f"MODEL: '{device_model}' → Teacher iPad (default for iPads)")
+            return CATEGORIES['teacher_ipad']
     
     # EMAIL-BASED FALLBACK
     if email_lower:
@@ -313,7 +387,8 @@ def process_device(device_info, snipe_headers):
             category = determine_category_from_prestage(
                 prestage_name,
                 device_info['device_name'],
-                device_info['email']
+                device_info['email'],
+                device_info['model']
             )
             
             # Get or create model with retry
@@ -503,7 +578,9 @@ def main():
                     'model': computer.get('hardware', {}).get('model', '') if computer.get('hardware') else 'Unknown Model',
                     'email': '',  # No user data available from inventory
                     'username': '',
-                    'enrolled_via_automated': general.get('enrolledViaAutomatedDeviceEnrollment', False)
+                    'realname': '',
+                    'enrolled_via_automated': general.get('enrolledViaAutomatedDeviceEnrollment', False),
+                    'device_type': 'computer'
                 }
             
             all_devices.append(device_info)
@@ -512,7 +589,52 @@ def main():
         else:
             logger.warning(f"Skipping device {device_id} - missing serial number")
     
-    logger.info(f"Retrieved prestage info for {len(all_devices)} devices")
+    logger.info(f"Retrieved prestage info for {len(all_devices)} computers")
+    
+    # Get all mobile devices from Jamf
+    logger.info("Fetching all mobile devices from Jamf Pro...")
+    mobile_response = requests.get(
+        f"{JAMF_URL}/api/v2/mobile-devices",
+        headers=jamf_headers,
+        timeout=30
+    )
+    mobile_response.raise_for_status()
+    
+    mobile_devices = mobile_response.json().get('results', [])
+    logger.info(f"Found {len(mobile_devices)} mobile devices")
+    
+    # Process each mobile device to get prestage info
+    for i, mobile_device in enumerate(mobile_devices, 1):
+        device_id = mobile_device.get('id')
+        serial_number = mobile_device.get('serialNumber', '')
+        device_name = mobile_device.get('name', '')
+        
+        if device_id and serial_number:
+            logger.info(f"Processing mobile device {i}/{len(mobile_devices)} (ID: {device_id}) | Serial: {serial_number}")
+            
+            # Get prestage info AND user data from mobile device details
+            device_info = get_mobile_device_prestage_info(device_id, jamf_headers, mobile_device)
+            if not device_info:
+                # Fallback: use basic mobile device data
+                device_info = {
+                    'prestage_name': '',
+                    'device_name': device_name,
+                    'serial_number': serial_number,
+                    'model': mobile_device.get('model', 'Unknown Model'),
+                    'email': mobile_device.get('username', '') if '@' in mobile_device.get('username', '') else '',
+                    'username': mobile_device.get('username', ''),
+                    'realname': '',
+                    'enrolled_via_automated': False,
+                    'device_type': 'mobile'
+                }
+            
+            all_devices.append(device_info)
+            logger.info(f"  → Prestage: '{device_info['prestage_name']}' | Serial: {serial_number}")
+            time.sleep(0.05)  # Minimal rate limiting
+        else:
+            logger.warning(f"Skipping mobile device {device_id} - missing serial number")
+    
+    logger.info(f"Retrieved prestage info for {len(all_devices)} total devices ({len(computers)} computers + {len(mobile_devices)} mobile devices)")
     
     # Process devices sequentially to avoid rate limiting
     success_count = 0
