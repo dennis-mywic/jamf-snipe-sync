@@ -570,61 +570,61 @@ def process_device(device, snipe_headers, device_category):
                 logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
                 continue  # Try again on next attempt
             
-        # Get user ID if available
-        user_id = None
-        email = device.get('email')
-        if email:
-            try:
-                user_id = _get_user(email, headers_tuple)
-                if user_id:
-                    logger.info(f"Successfully found user ID {user_id} for email {email}")
+            # Get user ID if available
+            user_id = None
+            email = device.get('email')
+            if email:
+                try:
+                    user_id = _get_user(email, headers_tuple)
+                    if user_id:
+                        logger.info(f"Successfully found user ID {user_id} for email {email}")
+                    else:
+                        logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
+                except Exception as e:
+                    logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
+            
+            # Prepare asset data with BULLETPROOF category assignment
+            asset_data = {
+                'asset_tag': serial,
+                'serial': serial,
+                'model_id': model_id,
+                'category_id': device_category['id'],
+                'name': device.get('device_name'),
+                'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            }
+            
+            # BULLETPROOF: Log exactly what category we're assigning
+            logger.info(f"BULLETPROOF: Device {serial} → Category ID {device_category['id']} ({device_category['name']})")
+            
+            # Check if asset exists
+            url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
+            resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
+            
+            # Only set status_id for new assets
+            if resp.status_code != 200 or not resp.json().get('rows'):
+                asset_data['status_id'] = 2  # Deployable
+            
+            asset_id = None
+            if resp.status_code == 200 and resp.json().get('rows'):
+                # Update existing asset
+                asset_id = resp.json().get('rows')[0].get('id')
+                existing_category = resp.json().get('rows')[0].get('category', {})
+                existing_category_name = existing_category.get('name', 'Unknown')
+                logger.info(f"BULLETPROOF: Updating existing asset {asset_id} for serial {serial}")
+                logger.info(f"BULLETPROOF: Changing category from '{existing_category_name}' to '{device_category['name']}'")
+                resp = snipe_session.put(
+                    f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
+                    headers=snipe_headers,
+                    json=asset_data,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    logger.info(f"BULLETPROOF: Successfully updated asset {asset_id} - Category should now be '{device_category['name']}'")
                 else:
-                    logger.warning(f"No user ID found for email {email} - will create/update asset without user assignment")
-            except Exception as e:
-                logger.warning(f"Error looking up user for email {email} - will create/update asset without user assignment: {str(e)}")
-        
-        # Prepare asset data with BULLETPROOF category assignment
-        asset_data = {
-            'asset_tag': serial,
-            'serial': serial,
-            'model_id': model_id,
-            'category_id': device_category['id'],
-            'name': device.get('device_name'),
-            'notes': f"Last synced via Jamf Pro API at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        }
-        
-        # BULLETPROOF: Log exactly what category we're assigning
-        logger.info(f"BULLETPROOF: Device {serial} → Category ID {device_category['id']} ({device_category['name']})")
-        
-        # Check if asset exists
-        url = f"{SNIPE_IT_URL}/api/v1/hardware/byserial/{serial}"
-        resp = snipe_session.get(url, headers=snipe_headers, timeout=30)
-        
-        # Only set status_id for new assets
-        if resp.status_code != 200 or not resp.json().get('rows'):
-            asset_data['status_id'] = 2  # Deployable
-        
-        asset_id = None
-        if resp.status_code == 200 and resp.json().get('rows'):
-            # Update existing asset
-            asset_id = resp.json().get('rows')[0].get('id')
-            existing_category = resp.json().get('rows')[0].get('category', {})
-            existing_category_name = existing_category.get('name', 'Unknown')
-            logger.info(f"BULLETPROOF: Updating existing asset {asset_id} for serial {serial}")
-            logger.info(f"BULLETPROOF: Changing category from '{existing_category_name}' to '{device_category['name']}'")
-            resp = snipe_session.put(
-                f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
-                headers=snipe_headers,
-                json=asset_data,
-                timeout=30
-            )
-            if resp.status_code == 200:
-                logger.info(f"BULLETPROOF: Successfully updated asset {asset_id} - Category should now be '{device_category['name']}'")
+                    logger.error(f"BULLETPROOF: Failed to update asset {asset_id} - Status: {resp.status_code}, Response: {resp.text}")
             else:
-                logger.error(f"BULLETPROOF: Failed to update asset {asset_id} - Status: {resp.status_code}, Response: {resp.text}")
-        else:
-            # Create new asset
-            logger.info(f"Creating new asset for serial {serial}")
+                # Create new asset
+                logger.info(f"Creating new asset for serial {serial}")
             resp = snipe_session.post(
                 f"{SNIPE_IT_URL}/api/v1/hardware",
                 headers=snipe_headers,
