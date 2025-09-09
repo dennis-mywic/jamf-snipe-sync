@@ -178,9 +178,39 @@ def determine_category_from_prestage(prestage_name, device_name, email):
     return CATEGORIES['staff']
 
 def get_or_create_model(model_name, category_id, snipe_headers):
-    """Get or create model in Snipe-IT"""
+    """Get or create category-specific model in Snipe-IT"""
     try:
-        # Check if model exists
+        # Determine category suffix for unique model names
+        category_mapping = {
+            12: "Student",    # Student Loaner Laptop
+            16: "Staff",      # Staff Mac Laptop  
+            13: "SSC",        # SSC Laptop
+            20: "CheckIn",    # Check-In iPad
+            19: "Donations",  # Donations iPad
+            21: "Moneris",    # Moneris iPad
+            15: "Teacher",    # Teacher iPad
+            11: "AppleTV"     # Apple TVs
+        }
+        
+        category_suffix = category_mapping.get(category_id, "Unknown")
+        category_specific_name = f"{model_name} ({category_suffix})"
+        
+        # Check if category-specific model exists
+        response = requests.get(
+            f"{SNIPE_IT_URL}/api/v1/models",
+            headers=snipe_headers,
+            params={'search': category_specific_name},
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            models = response.json().get('rows', [])
+            for model in models:
+                if model.get('name', '').lower() == category_specific_name.lower():
+                    logger.info(f"Found existing category-specific model: {category_specific_name}")
+                    return model.get('id')
+        
+        # Check if original model exists (for backwards compatibility)
         response = requests.get(
             f"{SNIPE_IT_URL}/api/v1/models",
             headers=snipe_headers,
@@ -192,15 +222,21 @@ def get_or_create_model(model_name, category_id, snipe_headers):
             models = response.json().get('rows', [])
             for model in models:
                 if model.get('name', '').lower() == model_name.lower():
-                    return model.get('id')
+                    existing_category_id = model.get('category', {}).get('id')
+                    
+                    # If original model has correct category, use it
+                    if existing_category_id == category_id:
+                        logger.info(f"Using existing model '{model_name}' with correct category")
+                        return model.get('id')
         
-        # Create new model
+        # Create new category-specific model
         model_data = {
-            'name': model_name,
+            'name': category_specific_name,
             'category_id': category_id,
             'manufacturer_id': 1  # Apple
         }
         
+        logger.info(f"Creating new category-specific model: {category_specific_name}")
         response = requests.post(
             f"{SNIPE_IT_URL}/api/v1/models",
             headers=snipe_headers,
