@@ -544,22 +544,31 @@ def list_smart_groups(device_type='computers'):
         logger.error(f"Error fetching {device_type} groups: {str(e)}")
 
 def process_device(device, snipe_headers, device_category):
-    """Process a single device for syncing"""
-    try:
-        serial = device.get('serial_number')
-        logger.info(f"Processing device {serial}")
-        
-        # Minimal delay to prevent API rate limiting
-        time.sleep(0.2)
-        
-        # Convert headers to tuple for caching
-        headers_tuple = tuple(sorted(snipe_headers.items()))
-        
-        # Get or create model ID using the actual device model from Jamf
-        model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
-        if not model_id:
-            logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
-            return False
+    """Process a single device for syncing with retry logic"""
+    serial = device.get('serial_number')
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
+        try:
+            if attempt > 0:
+                # Exponential backoff: 1s, 2s, 4s
+                backoff_time = 2 ** (attempt - 1)
+                logger.info(f"Retrying device {serial} (attempt {attempt + 1}) after {backoff_time}s delay")
+                time.sleep(backoff_time)
+            
+            logger.info(f"Processing device {serial} (attempt {attempt + 1})")
+            
+            # Minimal delay to prevent API rate limiting
+            time.sleep(0.2)
+            
+            # Convert headers to tuple for caching
+            headers_tuple = tuple(sorted(snipe_headers.items()))
+            
+            # Get or create model ID using the actual device model from Jamf
+            model_id = _get_or_create_model(device.get('model'), device_category['id'], headers_tuple)
+            if not model_id:
+                logger.error(f"Could not get/create model for {device.get('model')} - skipping device {serial}")
+                continue  # Try again on next attempt
             
         # Get user ID if available
         user_id = None
@@ -718,23 +727,51 @@ def main():
     success_count = 0
     total_devices = len(all_devices)
     
-    with ThreadPoolExecutor(max_workers=5) as executor:  # 5 concurrent workers
-        futures = []
-        for device in all_devices:
-            future = executor.submit(process_device, device, snipe_headers, device['category'])
-            futures.append((future, device.get('serial_number')))
-            time.sleep(0.05)  # Small delay between submissions
+    # Process devices with automatic retry for 100% success rate
+    max_retries = 3
+    failed_devices = []
+    
+    for attempt in range(max_retries):
+        devices_to_process = all_devices if attempt == 0 else failed_devices
+        failed_devices = []
         
-        # Process results
-        for i, (future, serial) in enumerate(futures, 1):
-            try:
-                if future.result():
-                    success_count += 1
-                    logger.info(f"Successfully processed device {serial} ({i}/{total_devices})")
-                else:
-                    logger.warning(f"Failed to process device {serial}")
-            except Exception as e:
-                logger.error(f"Error processing device {serial}: {str(e)}")
+        if attempt > 0:
+            logger.info(f"Retry attempt {attempt} for {len(devices_to_process)} failed devices")
+            time.sleep(2)  # Longer delay between retry attempts
+        
+        with ThreadPoolExecutor(max_workers=3 if attempt == 0 else 2) as executor:  # Fewer workers on retry
+            futures = []
+            for device in devices_to_process:
+                future = executor.submit(process_device, device, snipe_headers, device['category'])
+                futures.append((future, device))
+                time.sleep(0.1 if attempt == 0 else 0.2)  # More conservative on retries
+            
+            # Process results
+            for i, (future, device) in enumerate(futures, 1):
+                serial = device.get('serial_number')
+                try:
+                    if future.result():
+                        success_count += 1
+                        logger.info(f"Successfully processed device {serial} ({success_count}/{total_devices})")
+                    else:
+                        failed_devices.append(device)
+                        logger.warning(f"Failed to process device {serial} - will retry")
+                except Exception as e:
+                    failed_devices.append(device)
+                    logger.error(f"Error processing device {serial}: {str(e)} - will retry")
+        
+        # If no failures, we're done
+        if not failed_devices:
+            logger.info(f"All devices processed successfully on attempt {attempt + 1}")
+            break
+    
+    # Final report
+    if failed_devices:
+        logger.error(f"FAILED: {len(failed_devices)} devices could not be processed after {max_retries} attempts:")
+        for device in failed_devices:
+            logger.error(f"  - {device.get('serial_number')}")
+    else:
+        logger.info("SUCCESS: 100% of devices processed successfully!")
     
     logger.info(f"Sync completed. Successfully processed {success_count} out of {len(all_devices)} devices")
 
