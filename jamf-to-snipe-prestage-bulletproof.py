@@ -161,9 +161,20 @@ def get_mobile_device_prestage_info(device_id, headers, device_data=None):
             device_name = device_data.get('name', device_name)
             model = device_data.get('model', model)
         
-        # Extract user info - mobile devices have username field
-        username = data.get('username', '') if data else device_data.get('username', '') if device_data else ''
-        email = username if username and '@' in username else ''
+        # Extract user info from location field (mobile devices)
+        email = ''
+        username = ''
+        realname = ''
+        
+        if data and 'location' in data:
+            location = data['location']
+            email = location.get('emailAddress', '') or location.get('username', '')
+            username = location.get('username', '')
+            realname = location.get('realName', '')
+        else:
+            # Fallback to top-level username field
+            username = data.get('username', '') if data else device_data.get('username', '') if device_data else ''
+            email = username if username and '@' in username else ''
         
         # Debug logging for user info
         if email:
@@ -178,7 +189,7 @@ def get_mobile_device_prestage_info(device_id, headers, device_data=None):
             'model': model,
             'email': email,
             'username': username,
-            'realname': '',  # Mobile devices don't typically have realname
+            'realname': realname,
             'enrolled_via_automated': True if prestage_name else False,
             'device_type': 'mobile'
         }
@@ -240,12 +251,16 @@ def determine_category_from_prestage(prestage_name, device_name, email, device_m
     
     # DEVICE NAME FALLBACK
     if device_lower:
-        if any(word in device_lower for word in ['student', 'loaner', 'loan']):
-            logger.info(f"DEVICE NAME: '{device_name}' → Student (device name contains student/loaner)")
+        if any(word in device_lower for word in ['student', 'loaner', 'loan', 'it-']):
+            logger.info(f"DEVICE NAME: '{device_name}' → Student (device name contains student/loaner/IT-)")
             return CATEGORIES['student']
         elif 'ssc' in device_lower:
             logger.info(f"DEVICE NAME: '{device_name}' → SSC (device name contains 'ssc')")
             return CATEGORIES['ssc']
+        # Check for student device patterns in serial numbers
+        elif any(pattern in device_lower for pattern in ['fvfyxt', 'xtuxl', 'xtux']):
+            logger.info(f"DEVICE NAME: '{device_name}' → Student (device name matches student pattern)")
+            return CATEGORIES['student']
     
     # DEFAULT TO STAFF
     logger.info(f"DEFAULT: No clear indicators found → Staff (default)")
@@ -423,7 +438,13 @@ def process_device(device_info, snipe_headers):
                 existing_category = response.json()['rows'][0].get('category', {})
                 existing_name = existing_category.get('name', 'Unknown')
                 
-                logger.info(f"Updating asset {asset_id}: {existing_name} → {category['name']}")
+                # Set status based on whether it's prestage-only or enrolled
+                if device_info.get('is_prestage_only', False):
+                    asset_data['status_id'] = 7  # Pending Enrollment
+                    logger.info(f"Updating asset {asset_id}: {existing_name} → {category['name']} (Status: Pending Enrollment)")
+                else:
+                    asset_data['status_id'] = 2  # Enrolled & Available
+                    logger.info(f"Updating asset {asset_id}: {existing_name} → {category['name']} (Status: Enrolled & Available)")
                 
                 response = requests.put(
                     f"{SNIPE_IT_URL}/api/v1/hardware/{asset_id}",
@@ -433,8 +454,13 @@ def process_device(device_info, snipe_headers):
                 )
             else:
                 # Create new asset
-                asset_data['status_id'] = 2  # Deployable
-                logger.info(f"Creating new asset: {category['name']}")
+                # Set status based on whether it's prestage-only or enrolled
+                if device_info.get('is_prestage_only', False):
+                    asset_data['status_id'] = 7  # Pending Enrollment
+                    logger.info(f"Creating new prestage-only asset: {category['name']} (Status: Pending Enrollment)")
+                else:
+                    asset_data['status_id'] = 2  # Enrolled & Available
+                    logger.info(f"Creating new enrolled asset: {category['name']} (Status: Enrolled & Available)")
                 
                 response = requests.post(
                     f"{SNIPE_IT_URL}/api/v1/hardware",
@@ -635,6 +661,125 @@ def main():
             logger.warning(f"Skipping mobile device {device_id} - missing serial number")
     
     logger.info(f"Retrieved prestage info for {len(all_devices)} total devices ({len(computers)} computers + {len(mobile_devices)} mobile devices)")
+    
+    # Get prestage-only devices (not enrolled) and add them with status "In Prestage Enrollment"
+    logger.info("Fetching prestage-only devices from Jamf Pro...")
+    
+    # Get prestage computer devices
+    prestage_comp_response = requests.get(
+        f"{JAMF_URL}/api/v2/computer-prestages/scope",
+        headers=jamf_headers,
+        timeout=30
+    )
+    if prestage_comp_response.status_code == 200:
+        prestage_data = prestage_comp_response.json()
+        serials_by_prestage = prestage_data.get('serialsByPrestageId', {})
+        
+        # Get prestage definitions to map IDs to names
+        prestage_defs_response = requests.get(
+            f"{JAMF_URL}/api/v2/computer-prestages",
+            headers=jamf_headers,
+            timeout=30
+        )
+        prestage_definitions = {}
+        if prestage_defs_response.status_code == 200:
+            defs_data = prestage_defs_response.json()
+            for prestage in defs_data.get('results', []):
+                prestage_definitions[prestage.get('id')] = prestage.get('displayName', 'Unknown')
+        
+        # Get list of already enrolled computer serials to exclude them
+        enrolled_serials = set()
+        for comp in computers:
+            general = comp.get('general', {})
+            if general and general.get('name'):
+                name = general.get('name')
+                # Extract serial number from enrolled device name (remove IT- prefix)
+                if name.startswith('IT-'):
+                    serial = name[3:]  # Remove 'IT-' prefix
+                    enrolled_serials.add(serial)
+                else:
+                    enrolled_serials.add(name)
+        
+        # Add prestage-only computers
+        prestage_count = 0
+        for serial, prestage_ids in serials_by_prestage.items():
+            if serial not in enrolled_serials:
+                prestage_name = prestage_definitions.get(prestage_ids[0], 'Unknown') if prestage_ids else 'Unknown'
+                
+                device_info = {
+                    'prestage_name': prestage_name,
+                    'device_name': serial,
+                    'serial_number': serial,
+                    'model': 'Unknown Model',  # We don't have model info for prestage-only devices
+                    'email': '',  # No user assignment for prestage-only
+                    'username': '',
+                    'realname': '',
+                    'enrolled_via_automated': False,
+                    'device_type': 'computer',
+                    'is_prestage_only': True  # Flag to identify prestage-only devices
+                }
+                
+                all_devices.append(device_info)
+                prestage_count += 1
+                logger.info(f"  → Prestage-only computer: {serial} ({prestage_name})")
+        
+        logger.info(f"Added {prestage_count} prestage-only computers")
+    
+    # Get prestage mobile devices
+    prestage_mobile_response = requests.get(
+        f"{JAMF_URL}/api/v2/mobile-device-prestages/scope",
+        headers=jamf_headers,
+        timeout=30
+    )
+    if prestage_mobile_response.status_code == 200:
+        prestage_data = prestage_mobile_response.json()
+        serials_by_prestage = prestage_data.get('serialsByPrestageId', {})
+        
+        # Get prestage definitions to map IDs to names
+        prestage_defs_response = requests.get(
+            f"{JAMF_URL}/api/v2/mobile-device-prestages",
+            headers=jamf_headers,
+            timeout=30
+        )
+        prestage_definitions = {}
+        if prestage_defs_response.status_code == 200:
+            defs_data = prestage_defs_response.json()
+            for prestage in defs_data.get('results', []):
+                prestage_definitions[prestage.get('id')] = prestage.get('displayName', 'Unknown')
+        
+        # Get list of already enrolled mobile device serials to exclude them
+        enrolled_mobile_serials = set()
+        for mobile in mobile_devices:
+            name = mobile.get('name', '')
+            if name:
+                enrolled_mobile_serials.add(name)
+        
+        # Add prestage-only mobile devices
+        prestage_mobile_count = 0
+        for serial, prestage_ids in serials_by_prestage.items():
+            if serial not in enrolled_mobile_serials:
+                prestage_name = prestage_definitions.get(prestage_ids[0], 'Unknown') if prestage_ids else 'Unknown'
+                
+                device_info = {
+                    'prestage_name': prestage_name,
+                    'device_name': serial,
+                    'serial_number': serial,
+                    'model': 'Unknown Model',  # We don't have model info for prestage-only devices
+                    'email': '',  # No user assignment for prestage-only
+                    'username': '',
+                    'realname': '',
+                    'enrolled_via_automated': False,
+                    'device_type': 'mobile',
+                    'is_prestage_only': True  # Flag to identify prestage-only devices
+                }
+                
+                all_devices.append(device_info)
+                prestage_mobile_count += 1
+                logger.info(f"  → Prestage-only mobile: {serial} ({prestage_name})")
+        
+        logger.info(f"Added {prestage_mobile_count} prestage-only mobile devices")
+    
+    logger.info(f"Total devices to process: {len(all_devices)} (enrolled + prestage-only)")
     
     # Process devices sequentially to avoid rate limiting
     success_count = 0
