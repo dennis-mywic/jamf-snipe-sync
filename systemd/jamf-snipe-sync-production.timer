@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Jamf to Snipe-IT Sync daily at 2AM Mountain Time
+Requires=jamf-snipe-sync-production.service
+
+[Timer]
+# 2AM Mountain Time = 8AM UTC (Mountain Standard Time) or 9AM UTC (Mountain Daylight Time)
+# Using 8AM UTC to be safe for Mountain Standard Time
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

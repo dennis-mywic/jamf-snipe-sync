@@ -1,0 +1,14 @@
+[Unit]
+Description=Jamf to Snipe-IT Bulletproof Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/jamf-snipe-sync
+ExecStart=/opt/jamf-snipe-sync/run-complete-jamf-sync.sh
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
