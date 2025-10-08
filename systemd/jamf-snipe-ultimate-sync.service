@@ -1,0 +1,20 @@
+[Unit]
+Description=Jamf to Snipe-IT Ultimate 100%% Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dennis
+WorkingDirectory=/home/dennis/jamf-snipe-sync
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /home/dennis/jamf-snipe-sync/jamf-snipe-ultimate-100-percent-sync.py
+StandardOutput=append:/var/log/jamf-snipe-sync.log
+StandardError=append:/var/log/jamf-snipe-sync.error.log
+TimeoutStartSec=3600
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
+

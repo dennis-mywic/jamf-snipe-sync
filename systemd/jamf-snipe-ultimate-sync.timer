@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Jamf to Snipe-IT Ultimate Sync at 2 AM MST
+Requires=jamf-snipe-ultimate-sync.service
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=jamf-snipe-ultimate-sync.service
+
+[Install]
+WantedBy=timers.target
+
