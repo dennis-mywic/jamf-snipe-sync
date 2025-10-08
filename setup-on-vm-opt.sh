@@ -52,7 +52,7 @@ sudo chown -R itsystems:itsystems $JAMF_DIR
 # Install dependencies
 echo "📦 Installing Python dependencies..."
 cd $JAMF_DIR
-pip3 install -r requirements.txt --user
+pip3 install -r requirements.txt --user --break-system-packages 2>/dev/null || pip3 install -r requirements.txt --user
 
 # Make scripts executable
 chmod +x *.py *.sh 2>/dev/null || true
@@ -94,7 +94,7 @@ sudo chown -R itsystems:itsystems $INTUNE_DIR
 # Install dependencies
 echo "📦 Installing Python dependencies..."
 cd $INTUNE_DIR
-pip3 install -r requirements.txt --user
+pip3 install -r requirements.txt --user --break-system-packages 2>/dev/null || pip3 install -r requirements.txt --user
 
 # Make scripts executable
 chmod +x *.py 2>/dev/null || true
