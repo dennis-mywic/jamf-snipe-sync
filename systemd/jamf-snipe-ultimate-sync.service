@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=dennis
-WorkingDirectory=/home/dennis/jamf-snipe-sync
+User=itsystems
+WorkingDirectory=/opt/jamf-snipe-sync
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-ExecStart=/usr/bin/python3 /home/dennis/jamf-snipe-sync/jamf-snipe-ultimate-100-percent-sync.py
+ExecStart=/usr/bin/python3 /opt/jamf-snipe-sync/jamf-snipe-ultimate-100-percent-sync.py
 StandardOutput=append:/var/log/jamf-snipe-sync.log
 StandardError=append:/var/log/jamf-snipe-sync.error.log
 TimeoutStartSec=3600

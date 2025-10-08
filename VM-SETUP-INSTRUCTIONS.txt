@@ -1,0 +1,68 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║           SETUP ON VM (172.22.2.169) - RUN AS itsystems USER                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+STEP 1: SSH to VM
+──────────────────────────────────────────────────────────────────────────────
+ssh itsystems@172.22.2.169
+
+
+STEP 2: Clone repositories to /opt
+──────────────────────────────────────────────────────────────────────────────
+cd /opt
+sudo git clone https://github.com/dennis-mywic/jamf-snipe-sync.git
+sudo git clone https://github.com/dennis-mywic/intune-snipe-sync.git
+
+# Set ownership to itsystems
+sudo chown -R itsystems:itsystems /opt/jamf-snipe-sync
+sudo chown -R itsystems:itsystems /opt/intune-snipe-sync
+
+
+STEP 3: Run the automated setup
+──────────────────────────────────────────────────────────────────────────────
+cd /opt/jamf-snipe-sync
+bash setup-on-vm-opt.sh
+
+
+DONE! The script will automatically:
+──────────────────────────────────────────────────────────────────────────────
+✅ Install Python dependencies
+✅ Set timezone to MST (America/Denver)
+✅ Install systemd timers
+✅ Schedule Jamf sync at 2:00 AM MST
+✅ Schedule Intune sync at 2:10 AM MST
+✅ Create log files at /var/log/
+✅ Enable auto-start on boot
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⏰ SCHEDULE:
+
+  2:00 AM MST - Jamf Sync   (/opt/jamf-snipe-sync)
+  2:10 AM MST - Intune Sync (/opt/intune-snipe-sync)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 VERIFY SETUP:
+
+  # Check timers
+  sudo systemctl list-timers
+
+  # Check specific timer status
+  sudo systemctl status jamf-snipe-ultimate-sync.timer
+  sudo systemctl status intune-snipe-sync.timer
+
+  # Manual test run
+  sudo systemctl start jamf-snipe-ultimate-sync.service
+  sudo systemctl start intune-snipe-sync.service
+
+  # View logs
+  sudo tail -f /var/log/jamf-snipe-sync.log
+  sudo tail -f /var/log/intune-snipe-sync.log
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ After setup completes, your 254 devices will sync automatically every night!
+
+═══════════════════════════════════════════════════════════════════════════════
+
